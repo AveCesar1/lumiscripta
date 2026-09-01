@@ -17,8 +17,10 @@ TARGET   := lumiscripta
 # -----------------------------------------------------------------------------
 INCFLAGS := -I$(INCDIR) \
             -I$(INCDIR)/lumiscripta \
+            -Ithird_party \
             -Ithird_party/imgui \
             -Ithird_party/md4c \
+            -Ithird_party/md4c/src \
             -Ithird_party/imgui_md
 
 # -----------------------------------------------------------------------------
@@ -37,7 +39,7 @@ IMGUI_SRCS := third_party/imgui/imgui.cpp \
               third_party/imgui/misc/cpp/imgui_stdlib.cpp
 
 # md4c (C source)
-MD4C_SRCS := third_party/md4c/md4c.c
+MD4C_SRCS := third_party/md4c/src/md4c.c
 
 # imgui_md
 IMGUI_MD_SRCS := third_party/imgui_md/imgui_md.cpp
@@ -45,7 +47,7 @@ IMGUI_MD_SRCS := third_party/imgui_md/imgui_md.cpp
 # All objects
 OBJS := $(patsubst $(SRCDIR)/%.cpp,$(BUILDDIR)/src/%.o,$(SRCS)) \
         $(patsubst third_party/imgui/%.cpp,$(BUILDDIR)/imgui/%.o,$(IMGUI_SRCS)) \
-        $(patsubst third_party/md4c/%.c,$(BUILDDIR)/md4c/%.o,$(MD4C_SRCS)) \
+        $(patsubst third_party/md4c/src/%.c,$(BUILDDIR)/md4c/%.o,$(MD4C_SRCS)) \
         $(patsubst third_party/imgui_md/%.cpp,$(BUILDDIR)/imgui_md/%.o,$(IMGUI_MD_SRCS))
 
 UNAME_S := $(shell uname -s 2>/dev/null || echo Unknown)
@@ -91,7 +93,7 @@ $(BUILDDIR)/imgui/%.o: third_party/imgui/%.cpp | $(BUILDDIR)
 	$(CXX) $(CXXFLAGS) $(INCFLAGS) -c $< -o $@
 
 # md4c (C)
-$(BUILDDIR)/md4c/%.o: third_party/md4c/%.c | $(BUILDDIR)
+$(BUILDDIR)/md4c/%.o: third_party/md4c/src/%.c | $(BUILDDIR)
 	@mkdir -p $(dir $@)
 	$(CC) $(CCFLAGS) $(INCFLAGS) -c $< -o $@
 
