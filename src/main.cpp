@@ -1,6 +1,6 @@
 /*
  * ============================================================================
- *     LumiScripta v1.1.1 - A simple markdown viewer written in modern C++.
+ *     LumiScripta v1.1.2 - A simple markdown viewer written in modern C++.
  *
  *  Author : Laus Deo (AveCesar1 on GitHub)
  *  License: MIT (https://opensource.org/licenses/MIT)

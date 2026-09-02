@@ -125,7 +125,7 @@ protected:
 	bool m_is_code = false;
 	unsigned m_hlevel=0;//0 - no heading
 	
-private:
+protected:
 
 	int text(MD_TEXTTYPE type, const char* str, const char* str_end);
 	int block(MD_BLOCKTYPE type, void* d, bool e);
@@ -155,6 +155,8 @@ private:
 	std::vector<list_info> m_list_stack;
 
 	std::vector<std::string> m_div_stack;
+
+private:
 
 	MD_PARSER m_md;
 };

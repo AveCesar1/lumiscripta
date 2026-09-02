@@ -2,6 +2,7 @@
 #define GRAPHICS_H
 
 #include <string>
+#include <algorithm>
 
 using std::string;
 
@@ -23,6 +24,7 @@ struct GLFWwindow;
 extern ImFont* g_font_regular;
 extern ImFont* g_font_bold;
 extern ImFont* g_font_bold_large;
+extern ImFont* g_font_mono;
 
 enum class Theme {
     Light,
@@ -31,14 +33,74 @@ enum class Theme {
 
 class MarkdownRenderer : public imgui_md {
 public:
+    MarkdownRenderer() : m_code_block(false), m_table_width(0.0f), m_table_start(0.0f) {}
+
     ImFont* get_font() const override {
+        if (m_is_code) {
+            return g_font_mono;
+        }
         if (m_is_table_header) {
             return g_font_bold;
         }
         switch (m_hlevel) {
             case 0:  return m_is_strong ? g_font_bold : g_font_regular;
-            case 1:  return g_font_bold_large;  // H1
-            default: return g_font_bold;        // H2, H3...
+            case 1:  return g_font_bold_large;
+            default: return g_font_bold;
+        }
+    }
+
+    void BLOCK_CODE(const MD_BLOCK_CODE_DETAIL*, bool e) override {
+        if (e) {
+            m_is_code = true;
+            ImGui::NewLine();
+            ImGui::PushFont(g_font_mono);
+            ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4.0f, 4.0f));
+            ImGui::Indent(12.0f);
+            m_code_block = true;
+        } else {
+            if (m_code_block) {
+                ImGui::Unindent(12.0f);
+                ImGui::PopStyleVar();
+                ImGui::PopFont();
+                m_code_block = false;
+            }
+            m_is_code = false;
+            ImGui::NewLine();
+        }
+    }
+
+    void SPAN_CODE(bool e) override {
+        if (e) {
+            ImGui::PushFont(g_font_mono);
+            ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_Text));
+        } else {
+            ImGui::PopStyleColor();
+            ImGui::PopFont();
+        }
+    }
+
+    void BLOCK_TABLE(const MD_BLOCK_TABLE_DETAIL* d, bool e) override {
+        if (e) {
+            const float avail = ImGui::GetContentRegionAvail().x;
+            m_table_width = std::min(avail * 0.9f, 900.0f);
+            m_table_start = ImGui::GetCursorPosX() + (avail - m_table_width) * 0.5f;
+            ImGui::SetCursorPosX(m_table_start);
+        }
+        imgui_md::BLOCK_TABLE(d, e);
+    }
+
+    void BLOCK_THEAD(bool e) override {
+        imgui_md::BLOCK_THEAD(e);
+        if (!e && m_table_width > 0.0f && m_table_col_pos.size() > 1) {
+            const float natural_start = m_table_col_pos.front();
+            const float natural_end = m_table_last_pos.x;
+            const float natural_width = natural_end - natural_start;
+            if (natural_width > 0.0f) {
+                for (float& position : m_table_col_pos) {
+                    position = m_table_start + (position - natural_start) * m_table_width / natural_width;
+                }
+                m_table_last_pos.x = m_table_start + m_table_width;
+            }
         }
     }
 
@@ -52,6 +114,11 @@ public:
         // Optional: load images.
         return false;  // for now, we don't handle images.
     }
+
+private:
+    bool m_code_block;
+    float m_table_width;
+    float m_table_start;
 };
 
 class Graphics {
