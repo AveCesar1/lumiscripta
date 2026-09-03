@@ -156,6 +156,9 @@ protected:
 
 	std::vector<std::string> m_div_stack;
 
+	float m_table_cell_start = 0.0f;
+	float m_table_cell_end = 0.0f;
+
 private:
 
 	MD_PARSER m_md;

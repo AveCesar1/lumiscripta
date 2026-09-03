@@ -33,7 +33,9 @@ enum class Theme {
 
 class MarkdownRenderer : public imgui_md {
 public:
-    MarkdownRenderer() : m_code_block(false), m_table_width(0.0f), m_table_start(0.0f) {}
+    MarkdownRenderer()
+            : m_code_block(false), m_code_draw_list(nullptr), m_code_start(0.0f, 0.0f),
+                m_code_width(0.0f), m_table_width(0.0f), m_table_start(0.0f) {}
 
     ImFont* get_font() const override {
         if (m_is_code) {
@@ -53,13 +55,36 @@ public:
         if (e) {
             m_is_code = true;
             ImGui::NewLine();
+            const float avail = ImGui::GetContentRegionAvail().x;
+            const float target = avail;
+            const float x = ImGui::GetCursorScreenPos().x;
+            ImDrawList* draw = ImGui::GetWindowDrawList();
+            draw->ChannelsSplit(2);
+            draw->ChannelsSetCurrent(1);
+            m_code_draw_list = draw;
+            m_code_start = ImVec2(x, ImGui::GetCursorScreenPos().y);
+            m_code_width = target;
             ImGui::PushFont(g_font_mono);
             ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4.0f, 4.0f));
-            ImGui::Indent(12.0f);
+            ImGui::SetCursorScreenPos(ImVec2(x + 12.0f, m_code_start.y + 10.0f));
             m_code_block = true;
         } else {
             if (m_code_block) {
-                ImGui::Unindent(12.0f);
+                const float bottom = ImGui::GetCursorScreenPos().y + 6.0f;
+                m_code_draw_list->ChannelsSetCurrent(0);
+                m_code_draw_list->AddRectFilled(
+                    m_code_start,
+                    ImVec2(m_code_start.x + m_code_width, bottom),
+                        ImGui::GetColorU32(ImVec4(
+                            ImGui::GetStyle().Colors[ImGuiCol_FrameBg].x * 0.55f +
+                                ImGui::GetStyle().Colors[ImGuiCol_WindowBg].x * 0.45f,
+                            ImGui::GetStyle().Colors[ImGuiCol_FrameBg].y * 0.55f +
+                                ImGui::GetStyle().Colors[ImGuiCol_WindowBg].y * 0.45f,
+                            ImGui::GetStyle().Colors[ImGuiCol_FrameBg].z * 0.55f +
+                                ImGui::GetStyle().Colors[ImGuiCol_WindowBg].z * 0.45f,
+                            1.0f)),
+                    8.0f);
+                m_code_draw_list->ChannelsMerge();
                 ImGui::PopStyleVar();
                 ImGui::PopFont();
                 m_code_block = false;
@@ -84,24 +109,19 @@ public:
             const float avail = ImGui::GetContentRegionAvail().x;
             m_table_width = std::min(avail * 0.9f, 900.0f);
             m_table_start = ImGui::GetCursorPosX() + (avail - m_table_width) * 0.5f;
+            imgui_md::BLOCK_TABLE(d, e);
+            m_table_col_pos.clear();
+            if (d->col_count > 0) {
+                const float column_width = m_table_width / static_cast<float>(d->col_count);
+                for (unsigned i = 0; i < d->col_count; ++i) {
+                    m_table_col_pos.push_back(m_table_start + column_width * i);
+                }
+            }
+            m_table_last_pos.x = m_table_start + m_table_width;
             ImGui::SetCursorPosX(m_table_start);
+            return;
         }
         imgui_md::BLOCK_TABLE(d, e);
-    }
-
-    void BLOCK_THEAD(bool e) override {
-        imgui_md::BLOCK_THEAD(e);
-        if (!e && m_table_width > 0.0f && m_table_col_pos.size() > 1) {
-            const float natural_start = m_table_col_pos.front();
-            const float natural_end = m_table_last_pos.x;
-            const float natural_width = natural_end - natural_start;
-            if (natural_width > 0.0f) {
-                for (float& position : m_table_col_pos) {
-                    position = m_table_start + (position - natural_start) * m_table_width / natural_width;
-                }
-                m_table_last_pos.x = m_table_start + m_table_width;
-            }
-        }
     }
 
     void open_url() const override {
@@ -117,6 +137,9 @@ public:
 
 private:
     bool m_code_block;
+    ImDrawList* m_code_draw_list;
+    ImVec2 m_code_start;
+    float m_code_width;
     float m_table_width;
     float m_table_start;
 };
