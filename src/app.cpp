@@ -8,11 +8,35 @@
 #include "imgui/backends/imgui_impl_opengl3.h"
 #include "IconsFontAwesome/IconsFontAwesome7.h"
 #include <functional>
+#include <cstdio>
 #include <iostream>
 #include <memory>
 
+static string chooseFilePath() {
+    const char* command = nullptr;
+#ifdef __APPLE__
+    command = "osascript -e 'POSIX path of (choose file with prompt \"Open Markdown File\")' 2>/dev/null";
+#elif defined(_WIN32)
+    command = "powershell -NoProfile -Command \"Add-Type -AssemblyName System.Windows.Forms; $d=New-Object System.Windows.Forms.OpenFileDialog; $d.Filter='Markdown files (*.md)|*.md|All files (*.*)|*.*'; if($d.ShowDialog() -eq 'OK'){ $d.FileName }\"";
+#else
+    command = "zenity --file-selection --title='Open Markdown File' --file-filter='Markdown files | *.md *.markdown' --file-filter='All files | *' 2>/dev/null || kdialog --getopenfilename . '*.md *.markdown' 2>/dev/null";
+#endif
+
+    FILE* pipe = popen(command, "r");
+    if (!pipe) return string();
+
+    string path;
+    char buffer[512];
+    while (fgets(buffer, sizeof(buffer), pipe)) path += buffer;
+    pclose(pipe);
+
+    while (!path.empty() && (path.back() == '\n' || path.back() == '\r')) path.pop_back();
+    return path;
+}
+
 LumiscriptaApp::LumiscriptaApp()
-    : m_file(nullptr), m_graphics(nullptr), m_window(nullptr), m_viewMode(ViewMode::Preview), m_running(false) {}
+        : m_file(nullptr), m_graphics(nullptr), m_window(nullptr), m_viewMode(ViewMode::Preview),
+            m_running(false) {}
 
 LumiscriptaApp::~LumiscriptaApp() {}
 
@@ -56,6 +80,7 @@ void LumiscriptaApp::run() {
         glfwPollEvents();
 
         m_graphics->beginFrame();
+        processInput();
         renderUI();
         m_graphics->endFrame();
 
@@ -101,7 +126,12 @@ ViewMode LumiscriptaApp::getViewMode() const {
 }
 
 void LumiscriptaApp::processInput() {
-    // Global shortcuts can be added here later.
+    ImGuiIO& io = ImGui::GetIO();
+    if ((io.KeyCtrl || io.KeySuper) && ImGui::IsKeyPressed(ImGuiKey_S) && m_file) {
+        if (!m_file->getPath().empty()) {
+            saveFile(m_file->getPath());
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -124,8 +154,8 @@ void LumiscriptaApp::renderMenuBar() {
         ImGuiWindowFlags_NoScrollbar |
         ImGuiWindowFlags_NoSavedSettings);
 
-    // Draw the bar background manually so it blends perfectly with the theme.
-    ImDrawList* draw = ImGui::GetForegroundDrawList();
+    // Draw the bar background before its widgets.
+    ImDrawList* draw = ImGui::GetWindowDrawList();
     ImVec2 p0 = viewport->WorkPos;
     ImVec2 p1 = ImVec2(p0.x + viewport->WorkSize.x, p0.y + barHeight);
 
@@ -135,52 +165,51 @@ void LumiscriptaApp::renderMenuBar() {
     draw->AddRectFilled(p0, p1, bgCol);
     draw->AddLine(ImVec2(p0.x, p1.y), ImVec2(p1.x, p1.y), borderCol, 1.0f);
 
-    // Position cursor inside the bar.
-    ImGui::SetCursorScreenPos(ImVec2(p0.x + 20, p0.y + 8));
-    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_Text));
+    ImGui::SetCursorScreenPos(ImVec2(p0.x + 20, p0.y + 6));
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetColorU32(ImGuiCol_Text));
     ImGui::TextUnformatted("Lumiscripta");
     ImGui::PopStyleColor();
 
-    // Center: Editor / Preview toggle.
-    float toggleWidth = 152;
+    ImGui::SameLine(0.0f, 24.0f);
+    ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyle().Colors[ImGuiCol_FrameBg]);
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImGui::GetStyle().Colors[ImGuiCol_FrameBgHovered]);
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImGui::GetStyle().Colors[ImGuiCol_FrameBgActive]);
+    if (ImGui::Button("Open", ImVec2(64, 28))) {
+        const string path = chooseFilePath();
+        if (!path.empty()) loadFile(path);
+    }
+    ImGui::PopStyleColor(3);
+
+    float toggleWidth = 176.0f;
     float centerX = p0.x + (viewport->WorkSize.x - toggleWidth) * 0.5f;
     ImGui::SetCursorScreenPos(ImVec2(centerX, p0.y + 6));
 
-    ImVec2 btnSize(72, 28);
     ImVec4 textCol = ImGui::GetStyleColorVec4(ImGuiCol_Text);
     ImVec4 bgColVec = ImGui::GetStyleColorVec4(ImGuiCol_WindowBg);
     ImVec4 surfaceCol = ImGui::GetStyleColorVec4(ImGuiCol_FrameBg);
 
-    auto drawPillButton = [&](const char* label, bool active, std::function<void()> onClick) {
-        ImVec4 btnBg = active ? textCol : ImVec4(0, 0, 0, 0);
-        ImVec4 btnText = active ? bgColVec : textCol;
+    ImGui::PushStyleColor(ImGuiCol_Button, m_viewMode == ViewMode::Editor ? textCol : ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, surfaceCol);
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, surfaceCol);
+    ImGui::PushStyleColor(ImGuiCol_Text, m_viewMode == ViewMode::Editor ? bgColVec : textCol);
+    if (ImGui::Button("Code", ImVec2(84, 28)) && m_viewMode != ViewMode::Editor) toggleView();
+    ImGui::PopStyleColor(4);
 
-        ImGui::PushStyleColor(ImGuiCol_Button, btnBg);
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, active ? textCol : surfaceCol);
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, active ? textCol : surfaceCol);
-        ImGui::PushStyleColor(ImGuiCol_Text, btnText);
+    ImGui::SameLine(0.0f, 8.0f);
+    ImGui::PushStyleColor(ImGuiCol_Button, m_viewMode == ViewMode::Preview ? textCol : ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, surfaceCol);
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, surfaceCol);
+    ImGui::PushStyleColor(ImGuiCol_Text, m_viewMode == ViewMode::Preview ? bgColVec : textCol);
+    if (ImGui::Button("Preview", ImVec2(84, 28)) && m_viewMode != ViewMode::Preview) toggleView();
+    ImGui::PopStyleColor(4);
 
-        if (ImGui::Button(label, btnSize) && !active) onClick();
-
-        ImGui::PopStyleColor(4);
-    };
-
-    drawPillButton("Editor", m_viewMode == ViewMode::Editor, [&]() { toggleView(); });
-    ImGui::SameLine();
-    drawPillButton("Preview", m_viewMode == ViewMode::Preview, [&]() { toggleView(); });
-
-    // Right: theme icon button.
-    float iconBtnSize = 28;
+    float iconBtnSize = 64.0f;
     float rightX = p1.x - iconBtnSize - 20;
     ImGui::SetCursorScreenPos(ImVec2(rightX, p0.y + 6));
-
-    const char* icon = (m_graphics && m_graphics->getTheme() == Theme::Light)
-        ? ICON_FA_SUN : ICON_FA_MOON;
-
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, surfaceCol);
     ImGui::PushStyleColor(ImGuiCol_ButtonActive, surfaceCol);
-    if (ImGui::Button(icon, ImVec2(iconBtnSize, iconBtnSize))) toggleTheme();
+    if (ImGui::Button(m_graphics && m_graphics->getTheme() == Theme::Light ? "Light" : "Dark", ImVec2(iconBtnSize, 28))) toggleTheme();
     ImGui::PopStyleColor(3);
 
     // Reserve the bar height so WorkPos/WorkSize exclude it next frame.
@@ -193,13 +222,12 @@ void LumiscriptaApp::renderMenuBar() {
 // Main content area — uses the full viewport below the top bar.
 // ---------------------------------------------------------------------------
 void LumiscriptaApp::renderUI() {
-    renderMenuBar();
-
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    const float barHeight = 40.0f;
 
     // The content window fills the remaining work area.
-    ImGui::SetNextWindowPos(viewport->WorkPos);
-    ImGui::SetNextWindowSize(viewport->WorkSize);
+    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x, viewport->WorkPos.y + barHeight));
+    ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x, viewport->WorkSize.y - barHeight));
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(28, 24));
     ImGui::Begin("Content", nullptr,
@@ -218,6 +246,7 @@ void LumiscriptaApp::renderUI() {
         if (m_file) {
             string editable = m_file->getContent();
             m_graphics->renderEditor(editable);
+            m_file->setContent(editable);
         } else {
             string empty;
             m_graphics->renderEditor(empty);
@@ -226,4 +255,6 @@ void LumiscriptaApp::renderUI() {
 
     ImGui::End();
     ImGui::PopStyleVar();
+
+    renderMenuBar();
 }

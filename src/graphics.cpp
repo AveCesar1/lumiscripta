@@ -3,6 +3,7 @@
 #include "imgui.h"
 #include "imgui/backends/imgui_impl_glfw.h"
 #include "imgui/backends/imgui_impl_opengl3.h"
+#include "imgui/misc/cpp/imgui_stdlib.h"
 #include "imgui_md/imgui_md.h"
 #include "IconsFontAwesome/IconsFontAwesome7.h"
 #include <GLFW/glfw3.h>
@@ -110,13 +111,14 @@ void Graphics::endFrame() {
 
 void Graphics::renderEditor(string& content) {
     ImVec2 avail = ImGui::GetContentRegionAvail();
-    ImGui::BeginChild("editor_content", avail, false, ImGuiWindowFlags_None);
-    if (content.empty()) {
-        ImGui::TextDisabled("No file loaded.");
-    } else {
-        ImGui::TextUnformatted("Editor view is not yet implemented.");
-    }
-    ImGui::EndChild();
+    ImGui::PushFont(g_font_mono);
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, ImGui::GetStyle().Colors[ImGuiCol_WindowBg]);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(12, 12));
+    ImGui::InputTextMultiline("##markdown_source", &content, avail,
+        ImGuiInputTextFlags_AllowTabInput);
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor();
+    ImGui::PopFont();
 }
 
 void Graphics::renderPreview(const std::string& content) {

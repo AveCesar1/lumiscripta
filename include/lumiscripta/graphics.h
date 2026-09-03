@@ -33,9 +33,9 @@ enum class Theme {
 
 class MarkdownRenderer : public imgui_md {
 public:
-    MarkdownRenderer()
-            : m_code_block(false), m_code_draw_list(nullptr), m_code_start(0.0f, 0.0f),
-                m_code_width(0.0f), m_table_width(0.0f), m_table_start(0.0f) {}
+        MarkdownRenderer()
+                : m_code_block(false), m_code_draw_list(nullptr), m_code_start(0.0f, 0.0f),
+                    m_code_width(0.0f), m_table_width(0.0f), m_table_start(0.0f) {}
 
     ImFont* get_font() const override {
         if (m_is_code) {
@@ -56,7 +56,7 @@ public:
             m_is_code = true;
             ImGui::NewLine();
             const float avail = ImGui::GetContentRegionAvail().x;
-            const float target = avail;
+            const float target = std::min(avail * 0.9f, 900.0f);
             const float x = ImGui::GetCursorScreenPos().x;
             ImDrawList* draw = ImGui::GetWindowDrawList();
             draw->ChannelsSplit(2);
@@ -66,7 +66,7 @@ public:
             m_code_width = target;
             ImGui::PushFont(g_font_mono);
             ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4.0f, 4.0f));
-            ImGui::SetCursorScreenPos(ImVec2(x + 12.0f, m_code_start.y + 10.0f));
+            ImGui::SetCursorScreenPos(ImVec2(x, m_code_start.y + 10.0f));
             m_code_block = true;
         } else {
             if (m_code_block) {
