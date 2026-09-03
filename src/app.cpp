@@ -111,6 +111,19 @@ void LumiscriptaApp::renderMenuBar() {
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     float barHeight = 40.0f;
 
+    ImGui::SetNextWindowPos(viewport->WorkPos);
+    ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x, barHeight));
+    ImGui::Begin("TopBar", nullptr,
+        ImGuiWindowFlags_NoTitleBar |
+        ImGuiWindowFlags_NoResize |
+        ImGuiWindowFlags_NoMove |
+        ImGuiWindowFlags_NoCollapse |
+        ImGuiWindowFlags_NoBringToFrontOnFocus |
+        ImGuiWindowFlags_NoNavFocus |
+        ImGuiWindowFlags_NoBackground |
+        ImGuiWindowFlags_NoScrollbar |
+        ImGuiWindowFlags_NoSavedSettings);
+
     // Draw the bar background manually so it blends perfectly with the theme.
     ImDrawList* draw = ImGui::GetForegroundDrawList();
     ImVec2 p0 = viewport->WorkPos;
@@ -172,6 +185,8 @@ void LumiscriptaApp::renderMenuBar() {
 
     // Reserve the bar height so WorkPos/WorkSize exclude it next frame.
     ImGui::SetCursorScreenPos(ImVec2(p0.x, p1.y));
+    ImGui::Dummy(ImVec2(1.0f, 1.0f));
+    ImGui::End();
 }
 
 // ---------------------------------------------------------------------------
@@ -194,7 +209,6 @@ void LumiscriptaApp::renderUI() {
         ImGuiWindowFlags_NoCollapse |
         ImGuiWindowFlags_NoBringToFrontOnFocus |
         ImGuiWindowFlags_NoNavFocus |
-        ImGuiWindowFlags_NoBackground |
         ImGuiWindowFlags_NoScrollbar);
 
     if (m_viewMode == ViewMode::Preview) {

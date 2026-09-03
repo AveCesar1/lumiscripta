@@ -25,6 +25,8 @@
 
 #include "imgui_md.h"
 
+#include <cfloat>
+
 imgui_md::imgui_md()
 {
 	m_md.abi_version = 0;
@@ -259,6 +261,10 @@ void imgui_md::BLOCK_TD(const MD_BLOCK_TD_DETAIL*, bool e)
 		}
 
 		++m_table_next_column;
+		m_table_cell_start = m_table_col_pos[m_table_next_column - 1];
+		m_table_cell_end = m_table_next_column < m_table_col_pos.size()
+			? m_table_col_pos[m_table_next_column]
+			: m_table_last_pos.x;
 
 		ImGui::Indent(m_table_col_pos[m_table_next_column - 1]);
 		ImGui::SetCursorPos(
@@ -439,6 +445,13 @@ void imgui_md::render_text(const char* str, const char* str_end)
 		}
 
 		
+		if (m_is_table_header && m_table_cell_end > m_table_cell_start) {
+			const float width = ImGui::GetFont()->CalcTextSizeA(
+				ImGui::GetFontSize(), FLT_MAX, 0.0f, str, te).x;
+			ImGui::SetCursorPosX(m_table_cell_start +
+				(m_table_cell_end - m_table_cell_start - width) * 0.5f);
+		}
+
 		ImGui::TextUnformatted(str, te);
 
 		if (te > str && *(te - 1) == '\n') {
