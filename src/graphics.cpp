@@ -1,13 +1,83 @@
 #include "lumiscripta/graphics.h"
 
 #include "imgui.h"
+#include "imgui_internal.h"
 #include "imgui/backends/imgui_impl_glfw.h"
 #include "imgui/backends/imgui_impl_opengl3.h"
 #include "imgui/misc/cpp/imgui_stdlib.h"
 #include "imgui_md/imgui_md.h"
 #include "IconsFontAwesome/IconsFontAwesome7.h"
 #include <GLFW/glfw3.h>
+#include <cfloat>
 #include <iostream>
+#include <sstream>
+
+static void drawEditorLineNumbers(const string& content, const ImVec2& inputMin,
+    const ImVec2& inputMax, float scrollY, float wrapWidth, bool drawCaret) {
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float fontSize = ImGui::GetFontSize();
+    const float lineHeight = ImGui::GetTextLineHeight();
+    const float gutterWidth = 36.0f;
+    const float textTop = inputMin.y + style.FramePadding.y - scrollY;
+    const float numberX = inputMin.x + 7.0f;
+    const float dividerX = inputMin.x + gutterWidth;
+    const ImVec4 textColor = style.Colors[ImGuiCol_Text];
+    const ImU32 numberColor = ImGui::GetColorU32(ImVec4(
+        textColor.x, textColor.y, textColor.z, 0.38f));
+
+    ImDrawList* draw = ImGui::GetForegroundDrawList();
+    draw->PushClipRect(inputMin, inputMax, true);
+    draw->AddLine(ImVec2(dividerX, inputMin.y),
+        ImVec2(dividerX, inputMax.y),
+        ImGui::GetColorU32(ImGuiCol_Border), 1.0f);
+
+    const char* source = content.c_str();
+    const char* end = source + content.size();
+    int lineNumber = 1;
+    float row = 0.0f;
+    while (source <= end) {
+        const char* lineEnd = source;
+        while (lineEnd < end && *lineEnd != '\n') ++lineEnd;
+        const char* visualStart = source;
+        bool firstRow = true;
+
+        do {
+            const char* visualEnd = visualStart;
+            if (visualStart < lineEnd) {
+                visualEnd = g_font_mono->CalcWordWrapPosition(fontSize,
+                    visualStart, lineEnd, wrapWidth);
+                if (visualEnd <= visualStart) ++visualEnd;
+            }
+            if (firstRow) {
+                const string label = std::to_string(lineNumber);
+                draw->AddText(g_font_mono, fontSize * 0.72f,
+                    ImVec2(numberX, textTop + row * lineHeight), numberColor,
+                    label.c_str());
+                firstRow = false;
+            }
+            ++row;
+            visualStart = visualEnd;
+        } while (visualStart < lineEnd);
+
+        if (lineEnd == end) break;
+        source = lineEnd + 1;
+        ++lineNumber;
+        if (source == end) {
+            const string label = std::to_string(lineNumber);
+            draw->AddText(g_font_mono, fontSize * 0.72f,
+                ImVec2(numberX, textTop + row * lineHeight), numberColor,
+                label.c_str());
+            break;
+        }
+    }
+    if (drawCaret) {
+        const float caretY = textTop;
+        draw->AddLine(ImVec2(inputMin.x + gutterWidth + style.FramePadding.x, caretY),
+            ImVec2(inputMin.x + gutterWidth + style.FramePadding.x, caretY + lineHeight),
+            ImGui::GetColorU32(ImVec4(textColor.x, textColor.y, textColor.z, 0.95f)), 1.5f);
+    }
+    draw->PopClipRect();
+}
 
 // Font handles used by MarkdownRenderer.
 ImFont* g_font_regular = nullptr;
@@ -111,14 +181,42 @@ void Graphics::endFrame() {
 
 void Graphics::renderEditor(string& content) {
     ImVec2 avail = ImGui::GetContentRegionAvail();
+    ImVec4 canvas = ImGui::GetStyle().Colors[ImGuiCol_WindowBg];
+    ImVec4 paper = ImGui::GetStyle().Colors[ImGuiCol_FrameBg];
+    ImVec4 divider = ImGui::GetStyle().Colors[ImGuiCol_Border];
+    ImVec4 editorText = ImGui::GetStyle().Colors[ImGuiCol_Text];
+
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, paper);
+    ImGui::PushStyleColor(ImGuiCol_Border, divider);
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 8.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize, 1.0f);
+    ImGui::BeginChild("editor_surface", avail, true, ImGuiWindowFlags_NoScrollbar);
+
+    const float gutterWidth = 36.0f;
+    const float editorFramePadding = 8.0f;
     ImGui::PushFont(g_font_mono);
-    ImGui::PushStyleColor(ImGuiCol_FrameBg, ImGui::GetStyle().Colors[ImGuiCol_WindowBg]);
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(12, 12));
-    ImGui::InputTextMultiline("##markdown_source", &content, avail,
-        ImGuiInputTextFlags_AllowTabInput);
-    ImGui::PopStyleVar();
-    ImGui::PopStyleColor();
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, canvas);
+    ImGui::PushStyleColor(ImGuiCol_Text, editorText);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
+        ImVec2(gutterWidth + editorFramePadding, editorFramePadding));
+    ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarSize, 8.0f);
+    ImGui::InputTextMultiline("##markdown_source", &content, ImGui::GetContentRegionAvail(),
+        ImGuiInputTextFlags_AllowTabInput | ImGuiInputTextFlags_WordWrap);
+    const ImVec2 inputMin = ImGui::GetItemRectMin();
+    const ImVec2 inputMax = ImGui::GetItemRectMax();
+    ImGuiInputTextState* inputState = ImGui::GetInputTextState(ImGui::GetItemID());
+    const float inputScrollY = inputState ? inputState->Scroll.y : 0.0f;
+    const float wrapWidth = inputState && inputState->WrapWidth > 0.0f
+        ? inputState->WrapWidth
+        : inputMax.x - inputMin.x - ImGui::GetStyle().FramePadding.x * 2.0f;
+    drawEditorLineNumbers(content, inputMin, inputMax, inputScrollY, wrapWidth, ImGui::IsItemActive());
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor(2);
     ImGui::PopFont();
+
+    ImGui::EndChild();
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor(2);
 }
 
 void Graphics::renderPreview(const std::string& content) {

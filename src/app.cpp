@@ -185,23 +185,31 @@ void LumiscriptaApp::renderMenuBar() {
     ImGui::SetCursorScreenPos(ImVec2(centerX, p0.y + 6));
 
     ImVec4 textCol = ImGui::GetStyleColorVec4(ImGuiCol_Text);
-    ImVec4 bgColVec = ImGui::GetStyleColorVec4(ImGuiCol_WindowBg);
     ImVec4 surfaceCol = ImGui::GetStyleColorVec4(ImGuiCol_FrameBg);
+    ImVec4 accentColor = ImGui::GetStyleColorVec4(ImGuiCol_Border);
 
-    ImGui::PushStyleColor(ImGuiCol_Button, m_viewMode == ViewMode::Editor ? textCol : ImVec4(0, 0, 0, 0));
+    const bool codeActive = m_viewMode == ViewMode::Editor;
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, codeActive ? 1.0f : 0.0f);
+    ImGui::PushStyleColor(ImGuiCol_Border, accentColor);
+    ImGui::PushStyleColor(ImGuiCol_Button, codeActive ? surfaceCol : ImVec4(0, 0, 0, 0));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, surfaceCol);
     ImGui::PushStyleColor(ImGuiCol_ButtonActive, surfaceCol);
-    ImGui::PushStyleColor(ImGuiCol_Text, m_viewMode == ViewMode::Editor ? bgColVec : textCol);
+    ImGui::PushStyleColor(ImGuiCol_Text, textCol);
     if (ImGui::Button("Code", ImVec2(84, 28)) && m_viewMode != ViewMode::Editor) toggleView();
-    ImGui::PopStyleColor(4);
+    ImGui::PopStyleColor(5);
+    ImGui::PopStyleVar();
 
     ImGui::SameLine(0.0f, 8.0f);
-    ImGui::PushStyleColor(ImGuiCol_Button, m_viewMode == ViewMode::Preview ? textCol : ImVec4(0, 0, 0, 0));
+    const bool previewActive = m_viewMode == ViewMode::Preview;
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, previewActive ? 1.0f : 0.0f);
+    ImGui::PushStyleColor(ImGuiCol_Border, accentColor);
+    ImGui::PushStyleColor(ImGuiCol_Button, previewActive ? surfaceCol : ImVec4(0, 0, 0, 0));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, surfaceCol);
     ImGui::PushStyleColor(ImGuiCol_ButtonActive, surfaceCol);
-    ImGui::PushStyleColor(ImGuiCol_Text, m_viewMode == ViewMode::Preview ? bgColVec : textCol);
+    ImGui::PushStyleColor(ImGuiCol_Text, textCol);
     if (ImGui::Button("Preview", ImVec2(84, 28)) && m_viewMode != ViewMode::Preview) toggleView();
-    ImGui::PopStyleColor(4);
+    ImGui::PopStyleColor(5);
+    ImGui::PopStyleVar();
 
     float iconBtnSize = 64.0f;
     float rightX = p1.x - iconBtnSize - 20;
@@ -229,7 +237,8 @@ void LumiscriptaApp::renderUI() {
     ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x, viewport->WorkPos.y + barHeight));
     ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x, viewport->WorkSize.y - barHeight));
 
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(28, 24));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,
+        m_viewMode == ViewMode::Editor ? ImVec2(0, 0) : ImVec2(28, 24));
     ImGui::Begin("Content", nullptr,
         ImGuiWindowFlags_NoTitleBar |
         ImGuiWindowFlags_NoResize |
