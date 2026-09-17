@@ -12,6 +12,10 @@ SRCDIR   := src
 BUILDDIR := build
 TARGET   := lumiscripta
 
+# Where `make install` puts things. The binary resolves its assets as
+# $(PREFIX)/share/lumiscripta/assets (see assetDirs() in include/lumiscripta/utils.h).
+PREFIX   ?= /usr/local
+
 # -----------------------------------------------------------------------------
 # Include paths
 # -----------------------------------------------------------------------------
@@ -74,7 +78,7 @@ endif
 # -----------------------------------------------------------------------------
 # Rules
 # -----------------------------------------------------------------------------
-.PHONY: all clean run
+.PHONY: all clean run install
 
 all: $(TARGET)
 
@@ -110,3 +114,12 @@ clean:
 
 run: all
 	./$(TARGET)
+
+# Install the binary and its assets side by side, so the app works no matter
+# which directory it is launched from:
+#   $(PREFIX)/bin/lumiscripta
+#   $(PREFIX)/share/lumiscripta/assets/
+install: all
+	install -d $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(PREFIX)/share/lumiscripta
+	install -m 755 $(TARGET) $(DESTDIR)$(PREFIX)/bin/$(TARGET)
+	cp -R assets $(DESTDIR)$(PREFIX)/share/lumiscripta/

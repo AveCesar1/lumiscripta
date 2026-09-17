@@ -1,4 +1,5 @@
 #include "lumiscripta/graphics.h"
+#include "lumiscripta/utils.h"
 
 #include "imgui.h"
 #include "imgui_internal.h"
@@ -9,6 +10,7 @@
 #include "IconsFontAwesome/IconsFontAwesome7.h"
 #include <GLFW/glfw3.h>
 #include <cfloat>
+#include <fstream>
 #include <iostream>
 #include <sstream>
 
@@ -85,6 +87,49 @@ ImFont* g_font_bold = nullptr;
 ImFont* g_font_bold_large = nullptr;
 ImFont* g_font_mono = nullptr;
 
+// Does this file at least look like a font? A truncated download or a text
+// file renamed to .ttf would make ImGui assert() unconditionally on font data
+// it cannot parse — a hard abort that ImFontFlags_NoLoadError does not cover —
+// so such a file is treated exactly like a missing one.
+static bool looksLikeFontFile(const string& path) {
+	std::ifstream in(path.c_str(), std::ios::in | std::ios::binary);
+	if (!in) return false;
+
+	char header[4] = { 0, 0, 0, 0 };
+	if (!in.read(header, 4)) return false;
+
+	const unsigned char* h = reinterpret_cast<const unsigned char*>(header);
+	if (h[0] == 0x00 && h[1] == 0x01 && h[2] == 0x00 && h[3] == 0x00) return true; // TrueType
+	if (h[0] == 'O' && h[1] == 'T' && h[2] == 'T' && h[3] == 'O') return true;      // OpenType (CFF)
+	if (h[0] == 't' && h[1] == 't' && h[2] == 'c' && h[3] == 'f') return true;      // TrueType collection
+	if (h[0] == 't' && h[1] == 'r' && h[2] == 'u' && h[3] == 'e') return true;      // Apple TrueType
+	if (h[0] == 't' && h[1] == 'y' && h[2] == 'p' && h[3] == '1') return true;      // PostScript Type 1
+	return false;
+}
+
+// Load a font file, but never let a missing file abort the app. Fonts are
+// optional by design: the fallback chain in Graphics::init() turns a NULL
+// result into ImGui's built-in font, so an asset problem degrades the look
+// instead of killing the process.
+//
+// Why the flag: ImGui reports a missing font through IM_ASSERT_USER_ERROR(),
+// and io.ConfigErrorRecoveryEnableAssert defaults to true, so ImGui calls
+// assert() — with -O2 and no -DNDEBUG that is a real abort(). NoLoadError
+// tells ImGui that we check the return value ourselves (we also pre-check the
+// path, so a font that disappears between the check and the load is still
+// harmless).
+static ImFont* loadFontFile(const string& path, float size_px,
+	const ImFontConfig* cfg = nullptr, const ImWchar* ranges = nullptr) {
+	if (path.empty()) return nullptr;
+	if (!looksLikeFontFile(path)) return nullptr;
+
+	ImFontConfig local;
+	if (cfg) local = *cfg;
+	local.Flags |= ImFontFlags_NoLoadError;
+
+	return ImGui::GetIO().Fonts->AddFontFromFileTTF(path.c_str(), size_px, &local, ranges);
+}
+
 Graphics::Graphics()
     : m_ctx(nullptr), m_window(nullptr), m_theme(Theme::Light), m_initialized(false) {}
 
@@ -106,39 +151,64 @@ bool Graphics::init(GLFWwindow* window) {
 
     if (!ImGui_ImplGlfw_InitForOpenGL(window, true)) {
         std::cerr << "ImGui_ImplGlfw_InitForOpenGL failed\n";
+        ImGui::DestroyContext(m_ctx);   // don't leak the context we just created
+        m_ctx = nullptr;
+        m_window = nullptr;
         return false;
     }
 
     const char* glsl_version = "#version 330";
     if (!ImGui_ImplOpenGL3_Init(glsl_version)) {
         std::cerr << "ImGui_ImplOpenGL3_Init failed\n";
+        ImGui_ImplGlfw_Shutdown();      // undo what did succeed before bailing out
+        ImGui::DestroyContext(m_ctx);
+        m_ctx = nullptr;
+        m_window = nullptr;
         return false;
     }
 
-    // Load fonts.
+    // Load fonts. The paths are resolved against the executable, not against
+    // the working directory (see resolveAsset() in utils.h).
     {
         ImGuiIO& io2 = ImGui::GetIO();
 
+        const string regular_path = resolveAsset("fonts/Inter-Regular.ttf");
+        const string bold_path = resolveAsset("fonts/Inter-Bold.ttf");
+        const string mono_path = resolveAsset("fonts/JetBrainsMono-Regular.ttf");
+        const string icons_path = resolveAsset("fonts/fa-solid-900.otf");
+
         // Build a merged font atlas: Inter base + FontAwesome icons.
         // We load Inter first, then merge FA into it.
-        g_font_regular = io2.Fonts->AddFontFromFileTTF("assets/fonts/Inter-Regular.ttf", 17.0f);
-        g_font_bold = io2.Fonts->AddFontFromFileTTF("assets/fonts/Inter-Bold.ttf", 17.0f);
-        g_font_bold_large = io2.Fonts->AddFontFromFileTTF("assets/fonts/Inter-Bold.ttf", 28.0f);
-        g_font_mono = io2.Fonts->AddFontFromFileTTF("assets/fonts/JetBrainsMono-Regular.ttf", 14.0f);
+        g_font_regular = loadFontFile(regular_path, 17.0f);
+        g_font_bold = loadFontFile(bold_path, 17.0f);
+        g_font_bold_large = loadFontFile(bold_path, 28.0f);
+        g_font_mono = loadFontFile(mono_path, 14.0f);
 
         // Merge FontAwesome 7 Solid icons into the regular font.
-        if (g_font_regular) {
+        bool icons_loaded = false;
+        if (g_font_regular && !icons_path.empty()) {
             ImFontConfig cfg;
             cfg.MergeMode = true;
             cfg.GlyphMinAdvanceX = 17.0f;
             static const ImWchar icon_ranges[] = { ICON_MIN_FA, ICON_MAX_FA, 0 };
-            io2.Fonts->AddFontFromFileTTF("assets/fonts/fa-solid-900.otf", 17.0f, &cfg, icon_ranges);
-        }
-        if (!g_font_regular) {
-            std::cerr << "Failed to load Inter-Regular.ttf\n";
+            icons_loaded = (loadFontFile(icons_path, 17.0f, &cfg, icon_ranges) != nullptr);
         }
 
-        // Fallback chain.
+        // Fallback chain: assets are optional, so say what happened and carry on.
+        if (!g_font_regular) {
+            if (!regular_path.empty()) {
+                std::cerr << "Graphics: not a readable font file: " << regular_path
+                    << " — falling back to the built-in font.\n";
+            } else {
+                std::cerr
+                    << "Graphics: font assets not found — falling back to the built-in font.\n"
+                    << "          Set LUMISCRIPTA_ASSETS to the assets folder, or run from the project root. Searched:\n"
+                    << assetSearchPaths();
+            }
+        } else if (!icons_loaded) {
+            std::cerr << "Graphics: icon font unavailable — icons will not render.\n";
+        }
+
         if (!g_font_regular) g_font_regular = io2.Fonts->AddFontDefault();
         if (!g_font_bold) g_font_bold = g_font_regular;
         if (!g_font_bold_large) g_font_bold_large = g_font_bold;
