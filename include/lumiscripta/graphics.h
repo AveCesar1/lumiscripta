@@ -25,6 +25,7 @@ extern ImFont* g_font_regular;
 extern ImFont* g_font_bold;
 extern ImFont* g_font_bold_large;
 extern ImFont* g_font_mono;
+extern ImFont* g_font_mono_large;
 
 enum class Theme {
     Light,

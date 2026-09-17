@@ -1,6 +1,9 @@
 #include "lumiscripta/graphics.h"
 #include "lumiscripta/utils.h"
 
+#include <algorithm>
+#include <vector>
+
 #include "imgui.h"
 #include "imgui_internal.h"
 #include "imgui/backends/imgui_impl_glfw.h"
@@ -14,8 +17,27 @@
 #include <iostream>
 #include <sstream>
 
+static ImGuiWindow* findMultilineTextWindow(ImGuiID input_id) {
+    // A multiline input hosts its text inside an inner child window created by
+    // ImGui's InputTextEx(). Before the first click, GetInputTextState() returns
+    // NULL (the state is not "ours" until activation), yet the child already
+    // scrolls on its own — so to draw correct line numbers without user
+    // interaction we read the scroll from that child window, not from the state.
+    //
+    // The child window's own ID is a name hash ("<parent>/<label>_%08X"), not
+    // the input ID, so FindWindowByID(input_id) would not find it. ImGui does
+    // store the input ID in child->ChildId, so we match on that.
+    ImGuiContext& g = *GImGui;
+    for (int n = 0; n < g.Windows.Size; ++n) {
+        ImGuiWindow* w = g.Windows[n];
+        if (w && w->ChildId == input_id)
+            return w;
+    }
+    return nullptr;
+}
+
 static void drawEditorLineNumbers(const string& content, const ImVec2& inputMin,
-    const ImVec2& inputMax, float scrollY, float wrapWidth, bool drawCaret) {
+    const ImVec2& inputMax, float scrollY, float wrapWidth) {
     const ImGuiStyle& style = ImGui::GetStyle();
     const float fontSize = ImGui::GetFontSize();
     const float lineHeight = ImGui::GetTextLineHeight();
@@ -72,12 +94,6 @@ static void drawEditorLineNumbers(const string& content, const ImVec2& inputMin,
             break;
         }
     }
-    if (drawCaret) {
-        const float caretY = textTop;
-        draw->AddLine(ImVec2(inputMin.x + gutterWidth + style.FramePadding.x, caretY),
-            ImVec2(inputMin.x + gutterWidth + style.FramePadding.x, caretY + lineHeight),
-            ImGui::GetColorU32(ImVec4(textColor.x, textColor.y, textColor.z, 0.95f)), 1.5f);
-    }
     draw->PopClipRect();
 }
 
@@ -86,6 +102,7 @@ ImFont* g_font_regular = nullptr;
 ImFont* g_font_bold = nullptr;
 ImFont* g_font_bold_large = nullptr;
 ImFont* g_font_mono = nullptr;
+ImFont* g_font_mono_large = nullptr;
 
 // Does this file at least look like a font? A truncated download or a text
 // file renamed to .ttf would make ImGui assert() unconditionally on font data
@@ -183,6 +200,7 @@ bool Graphics::init(GLFWwindow* window) {
         g_font_bold = loadFontFile(bold_path, 17.0f);
         g_font_bold_large = loadFontFile(bold_path, 28.0f);
         g_font_mono = loadFontFile(mono_path, 14.0f);
+        g_font_mono_large = loadFontFile(mono_path, 17.5f);
 
         // Merge FontAwesome 7 Solid icons into the regular font.
         bool icons_loaded = false;
@@ -213,6 +231,7 @@ bool Graphics::init(GLFWwindow* window) {
         if (!g_font_bold) g_font_bold = g_font_regular;
         if (!g_font_bold_large) g_font_bold_large = g_font_bold;
         if (!g_font_mono) g_font_mono = g_font_regular;
+        if (!g_font_mono_large) g_font_mono_large = g_font_mono;
 
         io2.Fonts->Build();
     }
@@ -264,7 +283,10 @@ void Graphics::renderEditor(string& content) {
 
     const float gutterWidth = 36.0f;
     const float editorFramePadding = 8.0f;
-    ImGui::PushFont(g_font_mono);
+    // Use a slightly larger monospace font in the editor (17.5px vs 14px)
+    // so the code matches the preview's body text size. The line-number gutter
+    // keeps the smaller mono font for readability.
+    ImGui::PushFont(g_font_mono_large);
     ImGui::PushStyleColor(ImGuiCol_FrameBg, canvas);
     ImGui::PushStyleColor(ImGuiCol_Text, editorText);
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
@@ -275,11 +297,29 @@ void Graphics::renderEditor(string& content) {
     const ImVec2 inputMin = ImGui::GetItemRectMin();
     const ImVec2 inputMax = ImGui::GetItemRectMax();
     ImGuiInputTextState* inputState = ImGui::GetInputTextState(ImGui::GetItemID());
-    const float inputScrollY = inputState ? inputState->Scroll.y : 0.0f;
-    const float wrapWidth = inputState && inputState->WrapWidth > 0.0f
-        ? inputState->WrapWidth
-        : inputMax.x - inputMin.x - ImGui::GetStyle().FramePadding.x * 2.0f;
-    drawEditorLineNumbers(content, inputMin, inputMax, inputScrollY, wrapWidth, ImGui::IsItemActive());
+    ImGuiWindow* textWindow = findMultilineTextWindow(ImGui::GetItemID());
+
+    // Vertical scroll for the gutter: the textile's inner child window already
+    // scrolls on its own even before the first click, but GetInputTextState()
+    // returns NULL until the widget is activated (state->ID != id). So we read
+    // from the child window; fall back to the state (if active) and then to 0.
+    // (ScrollbarY is only true when the scrollbar is actually visible, which is
+    // not the case before scrolling — so don't gate on it.)
+    const float inputScrollY =
+        textWindow ? textWindow->Scroll.y
+        : (inputState ? inputState->Scroll.y : 0.0f);
+
+    // Wrap width: prefer the state's authoritative value when available; fall
+    // back to a computed value from the child window's usable width (mirrors
+    // ImGui's own formula in InputTextEx).
+    const float wrapWidth =
+        (inputState && inputState->WrapWidth > 0.0f)
+            ? inputState->WrapWidth
+            : (textWindow ? textWindow->ContentRegionRect.GetSize().x
+                          - (textWindow->ScrollbarX ? 0.0f : ImGui::GetStyle().ScrollbarSize)
+              : inputMax.x - inputMin.x - ImGui::GetStyle().FramePadding.x * 2.0f);
+
+    drawEditorLineNumbers(content, inputMin, inputMax, inputScrollY, wrapWidth);
     ImGui::PopStyleVar(2);
     ImGui::PopStyleColor(2);
     ImGui::PopFont();
@@ -344,6 +384,7 @@ static void setupStyleCommon() {
 
 void Graphics::setupStyleLight() {
     setupStyleCommon();
+    ImGui::StyleColorsLight();
     ImGuiStyle& style = ImGui::GetStyle();
 
     ImVec4 bg(250.0f / 255.0f, 247.0f / 255.0f, 242.0f / 255.0f, 1.0f);
@@ -363,6 +404,13 @@ void Graphics::setupStyleLight() {
     style.Colors[ImGuiCol_PopupBg] = bg;
     style.Colors[ImGuiCol_Border] = accent;
     style.Colors[ImGuiCol_BorderShadow] = ImVec4(0, 0, 0, 0);
+
+    // The input-text caret uses its own color slot, which is not used by the
+    // app's custom theme. Give it a visible color (same as body text) so the
+    // real caret — ImGui draws it, blinks it, positions it correctly — becomes
+    // visible instead of the alpha-0 placeholder slot left by the ImGuiStyle
+    // constructor.
+    style.Colors[ImGuiCol_InputTextCursor] = text;
 
     style.Colors[ImGuiCol_FrameBg] = surface;
     style.Colors[ImGuiCol_FrameBgHovered] = surfaceHover;
@@ -421,6 +469,7 @@ void Graphics::setupStyleLight() {
 
 void Graphics::setupStyleDark() {
     setupStyleCommon();
+    ImGui::StyleColorsDark();
     ImGuiStyle& style = ImGui::GetStyle();
 
     ImVec4 bg(27.0f / 255.0f, 29.0f / 255.0f, 32.0f / 255.0f, 1.0f);
@@ -440,6 +489,11 @@ void Graphics::setupStyleDark() {
     style.Colors[ImGuiCol_PopupBg] = ImVec4(35.0f / 255.0f, 37.0f / 255.0f, 42.0f / 255.0f, 1.0f);
     style.Colors[ImGuiCol_Border] = accent;
     style.Colors[ImGuiCol_BorderShadow] = ImVec4(0, 0, 0, 0);
+
+    // Same caret color as the light theme: visible body-text color so the
+    // input-text caret (drawn by ImGui, blinking, correctly positioned) is
+    // visible in both themes.
+    style.Colors[ImGuiCol_InputTextCursor] = text;
 
     style.Colors[ImGuiCol_FrameBg] = surface;
     style.Colors[ImGuiCol_FrameBgHovered] = surfaceHover;
