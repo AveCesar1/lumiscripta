@@ -292,8 +292,27 @@ void Graphics::renderEditor(string& content) {
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
         ImVec2(gutterWidth + editorFramePadding, editorFramePadding));
     ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarSize, 8.0f);
+
+    // ImGui always centers newly activated multiline text on its cursor. When it
+    // reactivates an untouched field whose word-wrap state was never initialized,
+    // InputTextEx treats the current width as a wrap-width change, sets its
+    // CursorCenterY flag, and moves the inner child window on the activation
+    // frame, even when the user scrolled elsewhere. Persist that inherited
+    // scroll across that activation frame, clamped, so only the caret moves.
+    const ImGuiID markdownInputId = ImGui::GetID("##markdown_source");
+    ImGuiWindow* inactiveTextWindow = findMultilineTextWindow(markdownInputId);
+    const float preActivationScrollY = inactiveTextWindow ? inactiveTextWindow->Scroll.y : 0.0f;
+    const ImVec2 preActivationScrollMax = inactiveTextWindow ? inactiveTextWindow->ScrollMax : ImVec2(0.0f, 0.0f);
     ImGui::InputTextMultiline("##markdown_source", &content, ImGui::GetContentRegionAvail(),
         ImGuiInputTextFlags_AllowTabInput | ImGuiInputTextFlags_WordWrap);
+    if (ImGui::IsItemActivated() && inactiveTextWindow != nullptr) {
+        float inheritedScrollY = preActivationScrollY;
+        if (inheritedScrollY < 0.0f)
+            inheritedScrollY = 0.0f;
+        if (inheritedScrollY > preActivationScrollMax.y)
+            inheritedScrollY = preActivationScrollMax.y;
+        inactiveTextWindow->Scroll.y = inheritedScrollY;
+    }
     const ImVec2 inputMin = ImGui::GetItemRectMin();
     const ImVec2 inputMax = ImGui::GetItemRectMax();
     ImGuiInputTextState* inputState = ImGui::GetInputTextState(ImGui::GetItemID());
