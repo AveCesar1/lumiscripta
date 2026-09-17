@@ -167,7 +167,16 @@ Four units. No namespaces. Global scope for classes.
 5. **Theme switching** must happen instantly without restart. Mutate `ImGuiStyle` colors and call `ImGui::GetIO().Fonts->Build()` only if fonts change (they don't).
 6. **File loading** is synchronous. Show a subtle status message in the top bar if loading fails (no modal dialogs).
 7. **Window icon** is set once at startup. If `assets/icon.png` is missing, the app starts without an icon — no crash.
-8. **Asset paths** are relative to the working directory. Do not hardcode absolute paths.
+8. **Asset paths** are resolved relative to the executable via `resolveAsset()`
+   (see `utils.h`), never assumed to be in the working directory: a desktop
+   launcher or file manager decides the working directory for us (usually `/`
+   or `$HOME`), so a cwd-relative path makes the app fail everywhere except the
+   project root. Resolution order: `$LUMISCRIPTA_ASSETS` -> `exe_dir/assets` ->
+   `exe_dir/../share/lumiscripta/assets` -> `exe_dir/../assets` and
+   `exe_dir/../../assets` -> `/usr/share/lumiscripta/assets` and
+   `/usr/local/share/lumiscripta/assets` -> `./assets` (last resort).
+   Never hardcode absolute paths, and never let a missing asset be fatal: log
+   to `std::cerr` and fall back (see the font fallback chain in `Graphics::init`).
 
 ---
 
@@ -179,6 +188,7 @@ make -j$(sysctl -n hw.ncpu)   # macOS
 make                # Windows (MinGW)
 make run            # build and execute
 make clean          # remove build/ and binary
+make install        # install to $(PREFIX) (default /usr/local); assets go to $(PREFIX)/share/lumiscripta/assets
 ```
 
 ---
