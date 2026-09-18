@@ -36,6 +36,30 @@ static ImGuiWindow* findMultilineTextWindow(ImGuiID input_id) {
     return nullptr;
 }
 
+// Mirror of the word-wrap width InputTextEx() computes for the multiline input's
+// inner child window:
+//
+//   wrap_width = ImMax(1.0f, GetContentRegionAvail().x
+//                             + (draw_window->ScrollbarY ? 0.0f : -style.ScrollbarSize));
+//
+// Inside that call the inner child has zero window padding and no decoration
+// offsets (ImGui forces WindowPadding to (0,0) around BeginChildEx), and ImGui
+// moves the child's cursor to Pos + FramePadding right after BeginChildEx, so
+// GetContentRegionAvail().x there is:
+//
+//   child->ContentRegionRect.Max.x - (child->Pos.x + FramePadding.x)
+//
+// Keeping the input's recorded wrap width equal to this value while the field is
+// inactive is what stops ImGui from re-centering the view on activation.
+static float predictMultilineWrapWidth(ImGuiWindow* text_window,
+    float frame_padding_x, float scrollbar_size) {
+    if (text_window == nullptr) return 0.0f;
+    const float cursor_pos_x = text_window->Pos.x + frame_padding_x;
+    const float avail_x = text_window->ContentRegionRect.Max.x - cursor_pos_x;
+    const float scrollbar_allowance = text_window->ScrollbarY ? 0.0f : -scrollbar_size;
+    return ImMax(1.0f, avail_x + scrollbar_allowance);
+}
+
 static void drawEditorLineNumbers(const string& content, const ImVec2& inputMin,
     const ImVec2& inputMax, float scrollY, float wrapWidth) {
     const ImGuiStyle& style = ImGui::GetStyle();
@@ -283,6 +307,7 @@ void Graphics::renderEditor(string& content) {
 
     const float gutterWidth = 36.0f;
     const float editorFramePadding = 8.0f;
+    const float editorScrollbarSize = 8.0f;
     // Use a slightly larger monospace font in the editor (17.5px vs 14px)
     // so the code matches the preview's body text size. The line-number gutter
     // keeps the smaller mono font for readability.
@@ -291,7 +316,7 @@ void Graphics::renderEditor(string& content) {
     ImGui::PushStyleColor(ImGuiCol_Text, editorText);
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
         ImVec2(gutterWidth + editorFramePadding, editorFramePadding));
-    ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarSize, 8.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarSize, editorScrollbarSize);
 
     // ImGui always centers newly activated multiline text on its cursor. When it
     // reactivates an untouched field whose word-wrap state was never initialized,
@@ -312,6 +337,30 @@ void Graphics::renderEditor(string& content) {
         if (inheritedScrollY > preActivationScrollMax.y)
             inheritedScrollY = preActivationScrollMax.y;
         inactiveTextWindow->Scroll.y = inheritedScrollY;
+    }
+
+    // Activation-time centering fix.
+    //
+    // While the field has never been activated, ImGuiInputTextState::WrapWidth is
+    // still 0. On the activation frame InputTextEx() compares that against the
+    // wrap width it just computed, concludes "the field was resized", and sets
+    // CursorCenterY: it then re-centers the view on the caret, moves the inner
+    // child window's scroll, recomputes the visible-line range and drops the
+    // caret for that frame (imgui_widgets.cpp, "if (state->CursorCenterY)").
+    // The frame is rendered at that new offset before we can undo the scroll,
+    // which is the one-frame flash/"reload" seen on the first click.
+    //
+    // Feeding the state the wrap width ImGui is about to compute makes that
+    // comparison a no-op, so activation only moves the caret. ImGui refreshes
+    // this value itself while the field is active, so we only maintain it while
+    // inactive (and only when the state is not owned by some other widget).
+    ImGuiWindow* seedTextWindow = findMultilineTextWindow(markdownInputId);
+    if (!ImGui::IsItemActive() && seedTextWindow != nullptr) {
+        ImGuiContext& g = *ImGui::GetCurrentContext();
+        if (g.InputTextState.ID == 0 || g.InputTextState.ID == markdownInputId) {
+            g.InputTextState.WrapWidth = predictMultilineWrapWidth(
+                seedTextWindow, gutterWidth + editorFramePadding, editorScrollbarSize);
+        }
     }
     const ImVec2 inputMin = ImGui::GetItemRectMin();
     const ImVec2 inputMax = ImGui::GetItemRectMax();
