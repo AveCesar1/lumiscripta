@@ -189,7 +189,41 @@ static ImFont* loadFontFile(const string& path, float size_px,
 // Codepoints the emoji face maps that we do *not* want it to own: some emoji
 // fonts map a handful of ASCII codepoints (for keycap sequences), and Inter/FA
 // must keep those. Without this, merging the emoji source would shadow ASCII.
-static const ImWchar kEmojiExcludeAscii[] = { 0x0000, 0x00FF, 0, 0 };
+//
+// Note the lower bound is 0x0001, not 0x0000: exclusion lists are walked as
+// "for (; exclude_list[0] != 0; exclude_list += 2)" in
+// ImFontAtlasBuildAcceptCodepointForSource() (imgui_draw.cpp), so a range that
+// *starts* at 0x0000 terminates the whole list and silently excludes nothing.
+// U+0000 itself can never be rendered, so starting at 1 loses nothing.
+static const ImWchar kEmojiExcludeAscii[] = { 0x0001, 0x00FF, 0, 0 };
+
+// Everything *outside* Font Awesome's private-use block
+// (ICON_MIN_FA..ICON_MAX_FA), i.e. what the icon source must never answer for.
+//
+// This list, not GlyphRanges, is what confines a merged source to its own
+// codepoints. ImGui 1.92 loads glyphs lazily and ImFontBaked_BuildLoadGlyph()
+// resolves a codepoint by asking the font's sources *in order*, taking the first
+// one that reports the codepoint, and it honours GlyphExcludeRanges but never
+// GlyphRanges (imgui_draw.cpp: "if (!src->GlyphExcludeRanges ||
+// ImFontAtlasBuildAcceptCodepointForSource(src, codepoint))"). Passing the icon
+// range as GlyphRanges therefore does not stop the icon font from answering for
+// anything else.
+//
+// Font Awesome 7 is no longer a pure private-use font: fa-solid-900.otf also
+// maps ~440 *real* Unicode codepoints as monochrome "alias" glyphs — ASCII
+// letters and digits, currency signs, arrows and most of the emoji plane
+// (U+1F4E6, U+1F4DD, U+1F525, U+1F600, …). Merged before the colour emoji
+// source, FA wins those lookups and the emoji renders black and white. Hence:
+// the icon source may only ever supply its PUA block.
+//
+// The ranges must not start at 0x0000 (see kEmojiExcludeAscii): a leading
+// zero terminates the list, which is exactly how an earlier version of this
+// list managed to exclude nothing at all.
+static const ImWchar kIconExcludeRanges[] = {
+    0x0001, ICON_MIN_FA - 1,     // everything below Font Awesome's PUA block
+    ICON_MAX_FA + 1, 0x10FFFF,   // everything above it (IM_UNICODE_CODEPOINT_MAX)
+    0, 0
+};
 
 // Emoji and pictographic ranges. With ImGuiBackendFlags_RendererHasTextures
 // (which the OpenGL3 backend sets) glyphs are baked lazily, so this list is not
@@ -296,12 +330,23 @@ bool Graphics::init(GLFWwindow* window) {
         g_font_mono = loadFontFile(mono_path, 14.0f);
         g_font_mono_large = loadFontFile(mono_path, 17.5f);
 
-        // Merge FontAwesome 7 Solid icons into the regular font.
+        // Merge FontAwesome 7 Solid icons into the regular font (the UI font).
+        //
+        // DstFont and GlyphExcludeRanges are both load-bearing here:
+        // - Without DstFont ImGui merges into Fonts.back() — whichever font was
+        //   added last, which at this point is the mono font of the editor, not
+        //   the font we mean. Icons then live in the wrong font and, worse, the
+        //   icon source shadows that font's other glyphs.
+        // - Without GlyphExcludeRanges the icon source answers for every
+        //   codepoint FA happens to map, including its monochrome Unicode
+        //   aliases — see kIconExcludeRanges.
         bool icons_loaded = false;
         if (g_font_regular && !icons_path.empty()) {
             ImFontConfig cfg;
             cfg.MergeMode = true;
+            cfg.DstFont = g_font_regular;
             cfg.GlyphMinAdvanceX = 17.0f;
+            cfg.GlyphExcludeRanges = kIconExcludeRanges;
             static const ImWchar icon_ranges[] = { ICON_MIN_FA, ICON_MAX_FA, 0 };
             icons_loaded = (loadFontFile(icons_path, 17.0f, &cfg, icon_ranges) != nullptr);
         }
