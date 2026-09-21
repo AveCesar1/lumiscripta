@@ -13,6 +13,7 @@ Lumiscripta (*lumen* + *scripta* — "illuminated writings") is a lightweight Ma
 - **Zero chrome** — the content is the interface. No ribbons, no sidebars, no clutter.
 - **Cross-platform** — Linux, macOS, and Windows.
 - **Fast & lean** — immediate-mode rendering, minimal memory footprint.
+- **Colour emoji** — emoji in the document render in full colour, in both preview and the editor.
 
 ---
 
@@ -29,33 +30,38 @@ All third-party code is included in this repository under `third_party/`:
 | [md4c](https://github.com/mity/md4c) | Markdown parser | MIT |
 | [ImGuiColorTextEdit](https://github.com/BalazsJako/ImGuiColorTextEdit) | Syntax-highlighted editor | MIT |
 
-The only **system dependency** you need to install is **GLFW** (window and input handling).
+Emoji glyphs are provided by [Twemoji Mozilla](https://github.com/mozilla/twemoji-colr)
+(COLRv0), rasterized with [FreeType](https://freetype.org/) via ImGui's
+`misc/freetype` back-end. See `assets/fonts/TwemojiMozilla.LICENSE.txt`.
+
+The two **system dependencies** you need to install are **GLFW** (window and input
+handling) and **FreeType** (colour emoji rasterization).
 
 ### Linux
 ```bash
 # Ubuntu / Debian
-sudo apt install libglfw3-dev libglew-dev
+sudo apt install libglfw3-dev libglew-dev libfreetype6-dev
 
 # Fedora / RHEL
-sudo dnf install glfw-devel glew-devel
+sudo dnf install glfw-devel glew-devel freetype-devel
 
 # Arch
-sudo pacman -S glfw glew
+sudo pacman -S glfw glew freetype2
 ```
 
 ### macOS
 ```bash
 # MacPorts
-sudo port install glfw
+sudo port install glfw freetype
 
 # Homebrew
-brew install glfw glew
+brew install glfw glew freetype
 ```
 
 ### Windows
 Download GLFW binaries from [glfw.org](https://www.glfw.org/download.html) or install via vcpkg:
 ```bash
-vcpkg install glfw3 glew
+vcpkg install glfw3 glew freetype
 ```
 
 ---
@@ -114,7 +120,7 @@ lumiscripta/
 │   ├── md4c/
 │   └── ImGuiColorTextEdit/
 ├── assets/                  # Fonts, icons
-└── CMakeLists.txt
+└── Makefile
 ```
 
 ---

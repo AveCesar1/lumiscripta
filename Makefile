@@ -4,8 +4,30 @@
 
 CXX      ?= g++
 CC       ?= gcc
-CXXFLAGS := -std=c++17 -Wall -Wextra -pedantic -O2
+
+# Dear ImGui font backends.
+# - IMGUI_ENABLE_FREETYPE replaces the built-in stb_truetype rasterizer with
+#   FreeType (see third_party/imgui/misc/freetype/). It is what allows colour
+#   glyphs ('COLR' v0 emoji) to be rasterized as RGBA and packed in the atlas.
+# - IMGUI_USE_WCHAR32 makes ImWchar a 32-bit type so codepoints above the BMP
+#   (emoji live at U+1F000+) can be represented at all. Without it emoji are
+#   simply impossible.
+# These defines must be identical for every translation unit that includes
+# imgui.h (imgui.cpp, imgui_draw.cpp and our own sources), otherwise the ImWchar
+# and ImFontLayout differ between TUs (ODR violation).
+CXXFLAGS := -std=c++17 -Wall -Wextra -pedantic -O2 \
+            -DIMGUI_ENABLE_FREETYPE -DIMGUI_USE_WCHAR32
 CCFLAGS  := -O2 -Wall
+
+# FreeType discovery. pkg-config covers Linux and Homebrew/Intel-mac; the
+# fallback covers MacPorts and Homebrew-on-Apple-Silicon where pkg-config may
+# not be installed or may not be on the path.
+FREETYPE_CFLAGS := $(shell pkg-config --cflags freetype2 2>/dev/null)
+FREETYPE_LIBS   := $(shell pkg-config --libs freetype2 2>/dev/null)
+ifeq ($(strip $(FREETYPE_LIBS)),)
+    FREETYPE_CFLAGS := -I/opt/local/include/freetype2 -I/opt/homebrew/include/freetype2 -I/usr/local/include/freetype2
+    FREETYPE_LIBS   := -L/opt/local/lib -L/opt/homebrew/lib -L/usr/local/lib -lfreetype
+endif
 
 INCDIR   := include
 SRCDIR   := src
@@ -25,7 +47,8 @@ INCFLAGS := -I$(INCDIR) \
             -Ithird_party/imgui \
             -Ithird_party/md4c \
             -Ithird_party/md4c/src \
-            -Ithird_party/imgui_md
+            -Ithird_party/imgui_md \
+            $(FREETYPE_CFLAGS)
 
 # -----------------------------------------------------------------------------
 # Source files
@@ -40,7 +63,8 @@ IMGUI_SRCS := third_party/imgui/imgui.cpp \
               third_party/imgui/imgui_demo.cpp \
               third_party/imgui/backends/imgui_impl_glfw.cpp \
               third_party/imgui/backends/imgui_impl_opengl3.cpp \
-              third_party/imgui/misc/cpp/imgui_stdlib.cpp
+              third_party/imgui/misc/cpp/imgui_stdlib.cpp \
+              third_party/imgui/misc/freetype/imgui_freetype.cpp
 
 # md4c (C source)
 MD4C_SRCS := third_party/md4c/src/md4c.c
@@ -60,7 +84,7 @@ UNAME_S := $(shell uname -s 2>/dev/null || echo Unknown)
 # Platform-specific linker flags
 # -----------------------------------------------------------------------------
 ifeq ($(UNAME_S),Linux)
-    LDFLAGS += -lglfw -lGLEW -lGL -ldl -lpthread
+    LDFLAGS += -lglfw -lGLEW -lGL -ldl -lpthread $(FREETYPE_LIBS)
 endif
 
 ifeq ($(UNAME_S),Darwin)
@@ -68,11 +92,12 @@ ifeq ($(UNAME_S),Darwin)
     # macOS with Homebrew: /opt/homebrew/lib (Apple Silicon) or /usr/local/lib (Intel)
     LDFLAGS += -L/opt/local/lib -L/opt/homebrew/lib -L/usr/local/lib
     LDFLAGS += -lglfw -framework OpenGL -framework Cocoa -framework IOKit -framework CoreFoundation
+    LDFLAGS += $(FREETYPE_LIBS)
     INCFLAGS += -I/opt/local/include -I/opt/homebrew/include -I/usr/local/include
 endif
 
 ifneq (,$(findstring MINGW,$(UNAME_S)))
-    LDFLAGS += -lglfw3 -lglew32 -lopengl32 -lgdi32 -limm32
+    LDFLAGS += -lglfw3 -lglew32 -lopengl32 -lgdi32 -limm32 $(FREETYPE_LIBS)
 endif
 
 # -----------------------------------------------------------------------------

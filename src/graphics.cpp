@@ -11,6 +11,7 @@
 #include "imgui/misc/cpp/imgui_stdlib.h"
 #include "imgui_md/imgui_md.h"
 #include "IconsFontAwesome/IconsFontAwesome7.h"
+#include "misc/freetype/imgui_freetype.h"   // ImGuiFreeTypeLoaderFlags_* (FreeType is the loader now)
 #include <GLFW/glfw3.h>
 #include <cfloat>
 #include <fstream>
@@ -171,6 +172,74 @@ static ImFont* loadFontFile(const string& path, float size_px,
 	return ImGui::GetIO().Fonts->AddFontFromFileTTF(path.c_str(), size_px, &local, ranges);
 }
 
+// ---------------------------------------------------------------------------
+// Supplementary fonts (icon font, colour emoji font)
+//
+// ImGui resolves a codepoint by walking the merged sources of *the font being
+// used*, in order (imgui_draw.cpp: "for (ImFontConfig* src : font->Sources)"),
+// and the FreeType loader decides whether a source has a glyph from the face's
+// real coverage (FT_Get_Char_Index). There is no cross-font fallback, so any
+// font that should be able to show these glyphs needs its own merged source.
+//
+// DstFont must be set explicitly. Without it ImGui merges into whichever font
+// was added last (imgui_draw.cpp: "font = font_cfg_in->DstFont ? ... : Fonts.back()"),
+// which is not necessarily the font we mean.
+// ---------------------------------------------------------------------------
+
+// Codepoints the emoji face maps that we do *not* want it to own: some emoji
+// fonts map a handful of ASCII codepoints (for keycap sequences), and Inter/FA
+// must keep those. Without this, merging the emoji source would shadow ASCII.
+static const ImWchar kEmojiExcludeAscii[] = { 0x0000, 0x00FF, 0, 0 };
+
+// Emoji and pictographic ranges. With ImGuiBackendFlags_RendererHasTextures
+// (which the OpenGL3 backend sets) glyphs are baked lazily, so this list is not
+// preloaded; it documents intent and keeps the legacy non-texture path correct.
+static const ImWchar kEmojiRanges[] = {
+    0x2190, 0x21FF,     // arrows
+    0x2300, 0x23FF,     // misc technical (⌚ ⏰ ⏳ …)
+    0x2600, 0x27BF,     // misc symbols + dingbats ( ✨ ✔ ❤  …)
+    0x2B00, 0x2BFF,     // misc symbols and arrows (⭐ ⬛ …)
+    0x1F000, 0x1FAFF,   // emoji: faces, people, objects, symbols, flags
+    0,
+    0
+};
+
+// Loader settings for the colour emoji source.
+// - LoadColor: rasterize the font's colour layers ('COLR' v0) as BGRA pixels.
+// - Bitmap: imgui_freetype sets FT_LOAD_NO_BITMAP by default
+//   ("if ((UserFlags & ImGuiFreeTypeLoaderFlags_Bitmap) == 0) LoadFlags |= FT_LOAD_NO_BITMAP;").
+//   Keeping this clears that, which is what CBDT/PNG colour fonts need (colour
+//   bitmaps are only handed out when the caller accepts bitmaps). Harmless for
+//   COLR fonts, so it makes the emoji source work for both formats.
+//
+// Font-format constraint (why the emoji asset is Twemoji Mozilla and not Noto
+// Color Emoji): FreeType itself can only rasterize 'COLR' v0 colour tables.
+// FreeType's FT_LOAD_COLOR documentation states that for 'COLR' v1 there "is no
+// rendering support", and SVG-in-OpenType glyphs additionally require an
+// external renderer that imgui_freetype only wires up when built with
+// IMGUI_ENABLE_FREETYPE_PLUTOSVG / _LUNASVG. Current Noto Color Emoji builds are
+// COLRv1 (+SVG for older ones), so FreeType returns an empty outline for them and
+// the glyph renders as a blank advance. Twemoji Mozilla is COLRv0 (vector colour
+// layers), which FreeType rasterizes at any requested size -> crisp at 17px.
+static const unsigned int kEmojiLoaderFlags =
+    ImGuiFreeTypeLoaderFlags_LoadColor | ImGuiFreeTypeLoaderFlags_Bitmap;
+
+// Merge a supplementary font into an already-loaded font.
+// 'loader_flags' is per-source loader settings (e.g. LoadColor for emoji);
+// pass 0 for plain glyphs like the icon font.
+static bool mergeFontInto(ImFont* dst, const string& path, float size_px,
+    unsigned int loader_flags, const ImWchar* exclude_ranges, const ImWchar* glyph_ranges) {
+    if (dst == nullptr || path.empty()) return false;
+
+    ImFontConfig cfg;
+    cfg.MergeMode = true;
+    cfg.DstFont = dst;
+    cfg.FontLoaderFlags = loader_flags;
+    cfg.GlyphExcludeRanges = exclude_ranges;
+
+    return loadFontFile(path, size_px, &cfg, glyph_ranges) != nullptr;
+}
+
 Graphics::Graphics()
     : m_ctx(nullptr), m_window(nullptr), m_theme(Theme::Light), m_initialized(false) {}
 
@@ -217,6 +286,7 @@ bool Graphics::init(GLFWwindow* window) {
         const string bold_path = resolveAsset("fonts/Inter-Bold.ttf");
         const string mono_path = resolveAsset("fonts/JetBrainsMono-Regular.ttf");
         const string icons_path = resolveAsset("fonts/fa-solid-900.otf");
+        const string emoji_path = resolveAsset("fonts/TwemojiMozilla.ttf");
 
         // Build a merged font atlas: Inter base + FontAwesome icons.
         // We load Inter first, then merge FA into it.
@@ -236,6 +306,26 @@ bool Graphics::init(GLFWwindow* window) {
             icons_loaded = (loadFontFile(icons_path, 17.0f, &cfg, icon_ranges) != nullptr);
         }
 
+        // Merge the colour emoji font into every font that renders text, so emoji
+        // in body text, headings and code all render. kEmojiLoaderFlags asks
+        // FreeType to rasterize the font's colour layers instead of a monochrome
+        // outline; ImGui then packs them as RGBA in the atlas, which the OpenGL3
+        // backend uploads unchanged. The emoji face is kept away from ASCII so
+        // Inter keeps owning it.
+        bool emoji_loaded = false;
+        if (!emoji_path.empty()) {
+            emoji_loaded |= mergeFontInto(g_font_regular, emoji_path, 17.0f,
+                kEmojiLoaderFlags, kEmojiExcludeAscii, kEmojiRanges);
+            emoji_loaded |= mergeFontInto(g_font_bold, emoji_path, 17.0f,
+                kEmojiLoaderFlags, kEmojiExcludeAscii, kEmojiRanges);
+            emoji_loaded |= mergeFontInto(g_font_bold_large, emoji_path, 28.0f,
+                kEmojiLoaderFlags, kEmojiExcludeAscii, kEmojiRanges);
+            emoji_loaded |= mergeFontInto(g_font_mono, emoji_path, 14.0f,
+                kEmojiLoaderFlags, kEmojiExcludeAscii, kEmojiRanges);
+            emoji_loaded |= mergeFontInto(g_font_mono_large, emoji_path, 17.5f,
+                kEmojiLoaderFlags, kEmojiExcludeAscii, kEmojiRanges);
+        }
+
         // Fallback chain: assets are optional, so say what happened and carry on.
         if (!g_font_regular) {
             if (!regular_path.empty()) {
@@ -249,6 +339,13 @@ bool Graphics::init(GLFWwindow* window) {
             }
         } else if (!icons_loaded) {
             std::cerr << "Graphics: icon font unavailable — icons will not render.\n";
+        }
+        if (emoji_path.empty()) {
+            std::cerr << "Graphics: colour emoji font not found (fonts/TwemojiMozilla.ttf) —"
+                " emoji will not render.\n";
+        } else if (!emoji_loaded) {
+            std::cerr << "Graphics: could not load the colour emoji font — emoji will not render."
+                " (FreeType only rasterizes 'COLR' v0 colour layers.)\n";
         }
 
         if (!g_font_regular) g_font_regular = io2.Fonts->AddFontDefault();
