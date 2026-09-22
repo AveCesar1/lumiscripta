@@ -141,7 +141,36 @@ ViewMode LumiscriptaApp::getViewMode() const {
 
 void LumiscriptaApp::processInput() {
     ImGuiIO& io = ImGui::GetIO();
-    if ((io.KeyCtrl || io.KeySuper) && ImGui::IsKeyPressed(ImGuiKey_S) && m_file) {
+    bool ctrlOrCmd = io.KeyCtrl || io.KeySuper;
+
+    // Ctrl/Cmd + O -> open file
+    if (ctrlOrCmd && ImGui::IsKeyPressed(ImGuiKey_O)) {
+        const string path = chooseFilePath();
+        if (!path.empty()) loadFile(path);
+    }
+
+    // Ctrl/Cmd + E -> toggle editor / preview
+    if (ctrlOrCmd && ImGui::IsKeyPressed(ImGuiKey_E) && m_viewMode != ViewMode::Welcome) {
+        toggleView();
+    }
+
+    // Ctrl/Cmd + Shift + T -> toggle light / dark theme
+    if (ctrlOrCmd && io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_T)) {
+        toggleTheme();
+    }
+
+    // Font size controls: '+' increases, '-' decreases (physical keys, cross-platform)
+    if (ctrlOrCmd) {
+        if (ImGui::IsKeyPressed(ImGuiKey_Equal) || ImGui::IsKeyPressed(ImGuiKey_KeypadAdd)) {
+            io.FontGlobalScale = std::min(io.FontGlobalScale + 0.1f, 2.5f);
+        }
+        if (ImGui::IsKeyPressed(ImGuiKey_Minus) || ImGui::IsKeyPressed(ImGuiKey_KeypadSubtract)) {
+            io.FontGlobalScale = std::max(io.FontGlobalScale - 0.1f, 0.5f);
+        }
+    }
+
+    // Ctrl/Cmd + S -> save (existing, preserved)
+    if (ctrlOrCmd && ImGui::IsKeyPressed(ImGuiKey_S) && m_file) {
         if (!m_file->getPath().empty()) {
             saveFile(m_file->getPath());
         }
@@ -246,11 +275,12 @@ void LumiscriptaApp::renderMenuBar() {
 // ---------------------------------------------------------------------------
 void LumiscriptaApp::renderWelcome() {
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    // Fill the full viewport so resizing never leaves black gaps.
     ImGui::SetNextWindowPos(viewport->WorkPos);
     ImGui::SetNextWindowSize(viewport->WorkSize);
 
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(28, 24));
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 10));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(36, 36));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(6, 12));
     ImGui::Begin("Welcome", nullptr,
         ImGuiWindowFlags_NoTitleBar |
         ImGuiWindowFlags_NoResize |
@@ -260,26 +290,38 @@ void LumiscriptaApp::renderWelcome() {
         ImGuiWindowFlags_NoNavFocus |
         ImGuiWindowFlags_NoScrollbar);
 
-    // Title in the large bold font used for headings.
+    // Center horizontally: compute offset from content region.
     if (g_font_bold_large) ImGui::PushFont(g_font_bold_large);
-    ImGui::Text("Lumiscripta");
+    float avail = ImGui::GetContentRegionAvail().x;
+    float textW = ImGui::CalcTextSize("Lumiscripta").x;
+    float offset = (avail - textW) * 0.5f;
+    if (offset > 0) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + offset);
+    ImGui::TextColored(ImVec4(0.28f, 0.22f, 0.16f, 1.0f), "Lumiscripta");
     if (g_font_bold_large) ImGui::PopFont();
 
-    ImGui::Text("Welcome");
+    ImGui::Spacing();
+    float wTextW = ImGui::CalcTextSize("Welcome").x;
+    float wOff = (avail - wTextW) * 0.5f;
+    if (wOff > 0) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + wOff);
+    ImGui::TextColored(ImVec4(0.55f, 0.42f, 0.30f, 1.0f), "Welcome");
     ImGui::Spacing();
 
-    // Two side-by-side buttons spanning the window width.
-    const float buttonWidth = (ImGui::GetContentRegionAvail().x - 8.0f) * 0.5f;
-    const ImVec2 buttonSize(buttonWidth, 40.0f);
-    if (ImGui::Button("Create file", buttonSize)) {
-        // Start with a fresh empty document, already in code mode.
+    ImGui::Separator();
+    ImGui::Dummy(ImVec2(0, viewport->WorkSize.y * 0.07f));
+
+    float btnW = avail * 0.35f;
+    float totalBtnW = btnW * 2.0f + 8.0f;
+    float btnOff = (avail - totalBtnW) * 0.5f;
+    if (btnOff > 0) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + btnOff);
+
+    if (ImGui::Button("Create file", ImVec2(btnW, 36.0f))) {
         if (!m_file) m_file = std::make_unique<File>();
         enterMainUI(ViewMode::Editor);
     }
     ImGui::SameLine(0.0f, 8.0f);
-    if (ImGui::Button("Open file", buttonSize)) {
+    if (ImGui::Button("Open file", ImVec2(btnW, 36.0f))) {
         const string path = chooseFilePath();
-        if (!path.empty()) loadFile(path);  // loadFile() enters the main UI on success.
+        if (!path.empty()) loadFile(path);
     }
 
     ImGui::End();
