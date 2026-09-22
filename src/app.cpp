@@ -35,7 +35,7 @@ static string chooseFilePath() {
 }
 
 LumiscriptaApp::LumiscriptaApp()
-        : m_file(nullptr), m_graphics(nullptr), m_window(nullptr), m_viewMode(ViewMode::Preview),
+        : m_file(nullptr), m_graphics(nullptr), m_window(nullptr), m_viewMode(ViewMode::Welcome),
             m_running(false) {}
 
 LumiscriptaApp::~LumiscriptaApp() {}
@@ -53,7 +53,7 @@ bool LumiscriptaApp::init() {
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
 #endif
 
-    m_window = glfwCreateWindow(1280, 800, "Lumiscripta", NULL, NULL);
+    m_window = glfwCreateWindow(440, 300, "Lumiscripta", NULL, NULL);
     if (!m_window) {
         std::cerr << "glfwCreateWindow failed\n";
         glfwTerminate();
@@ -98,6 +98,10 @@ void LumiscriptaApp::shutdown() {
 }
 
 void LumiscriptaApp::toggleView() {
+    if (m_viewMode == ViewMode::Welcome) {
+        enterMainUI(ViewMode::Editor);
+        return;
+    }
     m_viewMode = (m_viewMode == ViewMode::Preview) ? ViewMode::Editor : ViewMode::Preview;
 }
 
@@ -112,8 +116,18 @@ bool LumiscriptaApp::loadFile(const string& path) {
     if (!m_file) m_file = std::make_unique<File>();
     bool ok = m_file->load(path);
     if (!ok) return false;
-    m_viewMode = ViewMode::Preview;
+    // Loading a file (from the file picker or the command line) leaves the
+    // welcome screen behind and opens the main interface in preview mode.
+    enterMainUI(ViewMode::Preview);
     return true;
+}
+
+void LumiscriptaApp::enterMainUI(ViewMode mode) {
+    m_viewMode = mode;
+    if (m_window) {
+        // The welcome window is small; grow back to the full editor size.
+        glfwSetWindowSize(m_window, 1280, 800);
+    }
 }
 
 bool LumiscriptaApp::saveFile(const string& path) {
@@ -227,9 +241,60 @@ void LumiscriptaApp::renderMenuBar() {
 }
 
 // ---------------------------------------------------------------------------
+// Welcome screen — a small centered window with no top bar, shown when the
+// app starts without a file (and for as long as no document is open).
+// ---------------------------------------------------------------------------
+void LumiscriptaApp::renderWelcome() {
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(viewport->WorkPos);
+    ImGui::SetNextWindowSize(viewport->WorkSize);
+
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(28, 24));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 10));
+    ImGui::Begin("Welcome", nullptr,
+        ImGuiWindowFlags_NoTitleBar |
+        ImGuiWindowFlags_NoResize |
+        ImGuiWindowFlags_NoMove |
+        ImGuiWindowFlags_NoCollapse |
+        ImGuiWindowFlags_NoBringToFrontOnFocus |
+        ImGuiWindowFlags_NoNavFocus |
+        ImGuiWindowFlags_NoScrollbar);
+
+    // Title in the large bold font used for headings.
+    if (g_font_bold_large) ImGui::PushFont(g_font_bold_large);
+    ImGui::Text("Lumiscripta");
+    if (g_font_bold_large) ImGui::PopFont();
+
+    ImGui::Text("Welcome");
+    ImGui::Spacing();
+
+    // Two side-by-side buttons spanning the window width.
+    const float buttonWidth = (ImGui::GetContentRegionAvail().x - 8.0f) * 0.5f;
+    const ImVec2 buttonSize(buttonWidth, 40.0f);
+    if (ImGui::Button("Create file", buttonSize)) {
+        // Start with a fresh empty document, already in code mode.
+        if (!m_file) m_file = std::make_unique<File>();
+        enterMainUI(ViewMode::Editor);
+    }
+    ImGui::SameLine(0.0f, 8.0f);
+    if (ImGui::Button("Open file", buttonSize)) {
+        const string path = chooseFilePath();
+        if (!path.empty()) loadFile(path);  // loadFile() enters the main UI on success.
+    }
+
+    ImGui::End();
+    ImGui::PopStyleVar(2);
+}
+
+// ---------------------------------------------------------------------------
 // Main content area — uses the full viewport below the top bar.
 // ---------------------------------------------------------------------------
 void LumiscriptaApp::renderUI() {
+    if (m_viewMode == ViewMode::Welcome) {
+        renderWelcome();
+        return;
+    }
+
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     const float barHeight = 40.0f;
 

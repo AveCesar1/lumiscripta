@@ -15,7 +15,8 @@ class Graphics;
 
 enum class ViewMode {
     Editor,
-    Preview
+    Preview,
+    Welcome
 };
 
 class LumiscriptaApp {
@@ -55,6 +56,8 @@ private:
     void processInput();
     void renderUI();
     void renderMenuBar();
+    void renderWelcome();
+    void enterMainUI(ViewMode mode);
 };
 
 #endif /* APP_H */
