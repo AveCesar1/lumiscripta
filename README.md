@@ -14,7 +14,7 @@ Lumiscripta (*lumen* + *scripta* — "illuminated writings") is a lightweight Ma
 - **Cross-platform** — Linux, macOS, and Windows.
 - **Fast & lean** — immediate-mode rendering, minimal memory footprint.
 - **Colour emoji** — emoji in the document render in full colour, in both preview and the editor.
-- **Inline images** — `![alt](path)` renders local PNG, JPEG, GIF, BMP and TGA images in the preview; relative paths resolve against the markdown file's own directory.
+- **Inline images** — `![alt](path)` renders local PNG, JPEG, GIF, BMP and TGA images in the preview, centered when narrower than the text; broken references show a centered italic note instead of a gap.
 
 ---
 

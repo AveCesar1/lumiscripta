@@ -33,6 +33,14 @@ enum class Theme {
     Dark
 };
 
+// Why an image failed to load, so the preview can say which one happened:
+// the file simply isn't there, or it is there but we couldn't decode it.
+enum class ImageError {
+    None,        // loaded fine
+    NotFound,    // no file at that path
+    Unreadable   // file exists but stb_image refused it (corrupt/unsupported)
+};
+
 // The markdown renderer asks Graphics for image textures (and Graphics owns the
 // cache), so Graphics is forward-declared here and its definition comes later.
 class Graphics;
@@ -192,8 +200,10 @@ public:
 
     // Decode 'src' and upload it as an OpenGL texture (cached by path).
     // Returns false when the file is missing, unreadable or not an image, so a
-    // broken reference renders as nothing instead of a broken image.
-    bool getImageTexture(const string& src, ImTextureID& texture, ImVec2& size);
+    // broken reference renders as nothing instead of a broken image. 'error' (if
+    // given) tells the two failure modes apart for the fallback message.
+    bool getImageTexture(const string& src, ImTextureID& texture, ImVec2& size,
+                         ImageError* error = nullptr);
 
 private:
     ImGuiContext* m_ctx;

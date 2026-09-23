@@ -144,6 +144,12 @@ ImFont* g_font_bold_large = nullptr;
 ImFont* g_font_mono = nullptr;
 ImFont* g_font_mono_large = nullptr;
 
+// Pseudo-italic used only for the image error messages in the preview. It is
+// Inter-Regular slanted by FreeType (ImGuiFreeTypeLoaderFlags_Oblique applies
+// FT_GlyphSlot_Oblique to any outline face), so the project needs no separate
+// Italic cut of the font. File-local because only graphics.cpp draws it.
+static ImFont* g_font_italic = nullptr;
+
 // Does this file at least look like a font? A truncated download or a text
 // file renamed to .ttf would make ImGui assert() unconditionally on font data
 // it cannot parse — a hard abort that ImFontFlags_NoLoadError does not cover —
@@ -386,6 +392,14 @@ bool Graphics::init(GLFWwindow* window) {
                 kEmojiLoaderFlags, kEmojiExcludeAscii, kEmojiRanges);
         }
 
+        // Pseudo-italic for image error messages: FreeType slants the outline
+        // (FT_GlyphSlot_Oblique) instead of needing an Italic cut of Inter.
+        if (!regular_path.empty()) {
+            ImFontConfig italicCfg;
+            italicCfg.FontLoaderFlags = ImGuiFreeTypeLoaderFlags_Oblique;
+            g_font_italic = loadFontFile(regular_path, 17.0f, &italicCfg);
+        }
+
         // Fallback chain: assets are optional, so say what happened and carry on.
         if (!g_font_regular) {
             if (!regular_path.empty()) {
@@ -618,8 +632,14 @@ void Graphics::clearImageCache() {
     m_images.clear();
 }
 
-bool Graphics::getImageTexture(const string& src, ImTextureID& texture, ImVec2& size) {
-    if (!m_initialized || src.empty() || isRemoteReference(src)) return false;
+bool Graphics::getImageTexture(const string& src, ImTextureID& texture, ImVec2& size,
+                               ImageError* error) {
+    if (error) *error = ImageError::None;
+    if (!m_initialized || src.empty() || isRemoteReference(src)) {
+        // No local file matches a remote URL (and the app has no HTTP client).
+        if (error) *error = ImageError::NotFound;
+        return false;
+    }
 
     const string path = resolveImagePath(m_baseDir, src);
 
@@ -631,6 +651,13 @@ bool Graphics::getImageTexture(const string& src, ImTextureID& texture, ImVec2& 
         return true;
     }
 
+    // Ask before decoding, so "the file is not there" and "the file is there
+    // but I cannot read it" stay two different failures.
+    if (!pathExists(path)) {
+        if (error) *error = ImageError::NotFound;
+        return false;
+    }
+
     int width = 0;
     int height = 0;
     int fileChannels = 0;
@@ -640,13 +667,15 @@ bool Graphics::getImageTexture(const string& src, ImTextureID& texture, ImVec2& 
     unsigned char* pixels = stbi_load(path.c_str(), &width, &height, &fileChannels, 4);
     if (!pixels || width <= 0 || height <= 0) {
         if (pixels) stbi_image_free(pixels);
-        return false;   // missing file, broken file, or not an image at all
+        if (error) *error = ImageError::Unreadable;   // exists but undecodable
+        return false;
     }
 
     unsigned int id = 0;
     glGenTextures(1, &id);
     if (id == 0) {
         stbi_image_free(pixels);
+        if (error) *error = ImageError::Unreadable;
         return false;
     }
 
@@ -670,16 +699,34 @@ bool Graphics::getImageTexture(const string& src, ImTextureID& texture, ImVec2& 
     return true;
 }
 
-// imgui_md calls this for every ![alt](path) it meets. Returning false makes it
-// skip the image entirely — imgui_md suppresses the alt text too (render_text()
-// bails out while m_is_image is set), so a missing, unreadable or remote image
-// simply leaves the paragraph without it, never a crash or a broken placeholder.
+// imgui_md calls this for every ![alt](path) it meets. Success: hand back the
+// texture and centre the image on the line (imgui_md will scale and draw it).
+// Failure: emit a centred italic message instead — imgui_md suppresses the alt
+// text itself (render_text() bails out while m_is_image is set), so this is the
+// only place a broken reference becomes visible to the user.
 bool MarkdownRenderer::get_image(image_info& nfo) const {
     if (m_graphics == nullptr) return false;
 
+    ImageError error = ImageError::None;
     ImTextureID texture = ImTextureID_Invalid;
     ImVec2 size(0.0f, 0.0f);
-    if (!m_graphics->getImageTexture(m_href, texture, size)) return false;
+    if (!m_graphics->getImageTexture(m_href, texture, size, &error)) {
+        // The message must be centred the same way imgui_md centers the image,
+        // i.e. against the text width and the current zoom level.
+        const char* message =
+            (error == ImageError::Unreadable)
+                ? "Image file is unreadable (corrupted?)"
+                : "Image file not found";
+
+        if (g_font_italic) ImGui::PushFont(g_font_italic);
+        const float textW = ImGui::CalcTextSize(message).x;
+        const float centre = (ImGui::GetContentRegionAvail().x - textW) * 0.5f;
+        if (centre > 0.0f) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + centre);
+        ImGui::TextColored(ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled), message);
+        if (g_font_italic) ImGui::PopFont();
+
+        return false;
+    }
 
     nfo.texture_id = texture;
     nfo.size = size;
@@ -687,6 +734,15 @@ bool MarkdownRenderer::get_image(image_info& nfo) const {
     nfo.uv1 = ImVec2(1.0f, 1.0f);
     nfo.col_tint = ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
     nfo.col_border = ImVec4(0.0f, 0.0f, 0.0f, 0.0f);
+
+    // Centre horizontally when the image is narrower than the available width;
+    // the base class narrows wider images to fit right after we return, so a
+    // non-positive offset is deliberately skipped.
+    const float scale = ImGui::GetIO().FontGlobalScale;
+    const float available = ImGui::GetContentRegionAvail().x;
+    const float centre = (available - nfo.size.x * scale) * 0.5f;
+    if (centre > 0.0f) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + centre);
+
     return true;
 }
 
