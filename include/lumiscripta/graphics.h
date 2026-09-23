@@ -3,6 +3,7 @@
 
 #include <string>
 #include <algorithm>
+#include <unordered_map>
 
 using std::string;
 
@@ -32,11 +33,21 @@ enum class Theme {
     Dark
 };
 
+// The markdown renderer asks Graphics for image textures (and Graphics owns the
+// cache), so Graphics is forward-declared here and its definition comes later.
+class Graphics;
+
 class MarkdownRenderer : public imgui_md {
 public:
         MarkdownRenderer()
                 : m_code_block(false), m_code_draw_list(nullptr), m_code_start(0.0f, 0.0f),
-                    m_code_width(0.0f), m_table_width(0.0f), m_table_start(0.0f) {}
+                    m_code_width(0.0f), m_table_width(0.0f), m_table_start(0.0f),
+                    m_graphics(nullptr) {}
+
+    // The renderer is a member of Graphics, but imgui_md calls into it without
+    // ever telling it who owns it — this is how it learns where to look for
+    // images (defined in graphics.cpp).
+    void setGraphics(Graphics* graphics) { m_graphics = graphics; }
 
     ImFont* get_font() const override {
         if (m_is_code) {
@@ -131,10 +142,7 @@ public:
         // In Linux: system(("xdg-open " + m_href).c_str());
     }
 
-    bool get_image(image_info& nfo) const override {
-        // Optional: load images.
-        return false;  // for now, we don't handle images.
-    }
+    bool get_image(image_info& nfo) const override;
 
 private:
     bool m_code_block;
@@ -143,6 +151,7 @@ private:
     float m_code_width;
     float m_table_width;
     float m_table_start;
+    Graphics* m_graphics;   // owner; provides the image texture cache
 };
 
 class Graphics {
@@ -170,11 +179,36 @@ public:
     // Current active theme.
     Theme getTheme() const;
 
+    // ------------------------------------------------------------------
+    // Images (markdown ![alt](path) in the preview)
+    // ------------------------------------------------------------------
+    // Directory that relative image paths are resolved against. App sets this
+    // to the directory of the loaded markdown file.
+    void setBaseDirectory(const string& dir);
+
+    // Drop every cached image texture. Called when a new file is loaded so
+    // textures belonging to the previous document don't linger on the GPU.
+    void clearImageCache();
+
+    // Decode 'src' and upload it as an OpenGL texture (cached by path).
+    // Returns false when the file is missing, unreadable or not an image, so a
+    // broken reference renders as nothing instead of a broken image.
+    bool getImageTexture(const string& src, ImTextureID& texture, ImVec2& size);
+
 private:
     ImGuiContext* m_ctx;
     GLFWwindow* m_window;
     Theme m_theme;
     bool m_initialized;
+
+    // Loaded images: resolved path -> GL texture name + natural size.
+    struct CachedImage {
+        unsigned int id;    // GLuint; kept as unsigned int so this header
+        float width;        // does not have to drag in the OpenGL headers.
+        float height;
+    };
+    std::unordered_map<string, CachedImage> m_images;
+    string m_baseDir;
 
     void setupStyleLight();
     void setupStyleDark();

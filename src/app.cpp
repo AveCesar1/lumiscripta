@@ -1,6 +1,7 @@
 #include "lumiscripta/app.h"
 #include "lumiscripta/file.h"
 #include "lumiscripta/graphics.h"
+#include "lumiscripta/utils.h"   // parentDirectory() for resolving relative image paths
 
 #include <GLFW/glfw3.h>
 #include "imgui.h"
@@ -116,6 +117,13 @@ bool LumiscriptaApp::loadFile(const string& path) {
     if (!m_file) m_file = std::make_unique<File>();
     bool ok = m_file->load(path);
     if (!ok) return false;
+    if (m_graphics) {
+        // A new document brings new image references: release the textures that
+        // belonged to the previous one, and resolve relative paths against this
+        // file's directory from now on.
+        m_graphics->clearImageCache();
+        m_graphics->setBaseDirectory(parentDirectory(path));
+    }
     // Loading a file (from the file picker or the command line) leaves the
     // welcome screen behind and opens the main interface in preview mode.
     enterMainUI(ViewMode::Preview);

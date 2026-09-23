@@ -14,6 +14,35 @@ Lumiscripta (*lumen* + *scripta* — "illuminated writings") is a lightweight Ma
 - **Cross-platform** — Linux, macOS, and Windows.
 - **Fast & lean** — immediate-mode rendering, minimal memory footprint.
 - **Colour emoji** — emoji in the document render in full colour, in both preview and the editor.
+- **Inline images** — `![alt](path)` renders local PNG, JPEG, GIF, BMP and TGA images in the preview; relative paths resolve against the markdown file's own directory.
+
+---
+
+## 🖼️ Screenshots
+
+A quick look at what the app actually feels like. The images live in
+[`docs/screenshots/`](docs/screenshots/).
+
+### Welcome
+
+The first thing you see when Lumiscripta opens without a file: a small,
+chrome-free window that offers to create a new document or open an existing one.
+
+![The welcome window: the Lumiscripta title, the word Welcome, and the Create file and Open file buttons](docs/screenshots/welcome.png)
+
+### Preview — light
+
+A document rendered by md4c and imgui_md on the Warm Pebble canvas: headings,
+tables, inline code and colour emoji.
+
+![A markdown document rendered in the light theme, showing headings, a table and colour emoji](docs/screenshots/preview-light.png)
+
+### Editor — dark
+
+The same document in Code mode on the Slate Almond palette: monospaced source,
+a hairline line-number gutter and a blinking caret.
+
+![The raw markdown source in the dark theme, with line numbers down the left edge](docs/screenshots/editor-dark.png)
 
 ---
 
@@ -29,6 +58,7 @@ All third-party code is included in this repository under `third_party/`:
 | [imgui_md](https://github.com/mekhontsev/imgui_md) | Markdown rendering | MIT |
 | [md4c](https://github.com/mity/md4c) | Markdown parser | MIT |
 | [ImGuiColorTextEdit](https://github.com/BalazsJako/ImGuiColorTextEdit) | Syntax-highlighted editor | MIT |
+| [stb_image](https://github.com/nothings/stb) | Image decoding for the preview | Public domain / MIT |
 
 Emoji glyphs are provided by [Twemoji Mozilla](https://github.com/mozilla/twemoji-colr)
 (COLRv0), rasterized with [FreeType](https://freetype.org/) via ImGui's

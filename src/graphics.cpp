@@ -18,6 +18,21 @@
 #include <iostream>
 #include <sstream>
 
+// stb_image is a single-header library split in two parts: the declarations and
+// the implementation. Exactly one translation unit in the whole program may ask
+// for the implementation, and this is that unit — every other file only needs
+// the public API, so #define STB_IMAGE_IMPLEMENTATION lives here and nowhere
+// else.
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb/stb_image.h"
+
+// GL_CLAMP_TO_EDGE arrived in OpenGL 1.2. macOS and Linux headers define it,
+// but the Windows SDK's GL/gl.h stops at 1.1 — define it ourselves so the
+// texture setup below compiles everywhere.
+#ifndef GL_CLAMP_TO_EDGE
+#define GL_CLAMP_TO_EDGE 0x812F
+#endif
+
 static ImGuiWindow* findMultilineTextWindow(ImGuiID input_id) {
     // A multiline input hosts its text inside an inner child window created by
     // ImGui's InputTextEx(). Before the first click, GetInputTextState() returns
@@ -409,6 +424,7 @@ bool Graphics::init(GLFWwindow* window) {
 
 void Graphics::shutdown() {
     if (!m_initialized) return;
+    clearImageCache();   // textures must die while the GL context is alive
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext(m_ctx);
@@ -545,6 +561,9 @@ void Graphics::renderPreview(const std::string& content) {
 
     if (!content.empty()) {
         static MarkdownRenderer s_renderer;
+        // imgui_md never tells the renderer who owns it; this is the hook that
+        // lets it find the image cache.
+        s_renderer.setGraphics(this);
         s_renderer.print(content.c_str(), content.c_str() + content.size());
     } else {
         ImGui::TextDisabled("No file loaded. Use File -> Open or pass a path on the command line.");
@@ -555,6 +574,120 @@ void Graphics::renderPreview(const std::string& content) {
 
 Theme Graphics::getTheme() const {
     return m_theme;
+}
+
+// ---------------------------------------------------------------------------
+// Images — the ![alt](path) syntax in the preview
+// ---------------------------------------------------------------------------
+
+// Remote references (http://…, https://…) have no chance here: Lumiscripta has
+// no HTTP client, and a viewer should never block on the network anyway.
+static bool isRemoteReference(const string& src) {
+    return src.find("://") != string::npos;
+}
+
+// Absolute paths are left alone, everything else is relative to the markdown
+// file that referenced it.
+static bool isAbsolutePath(const string& path) {
+#ifdef _WIN32
+    return path.size() > 1 && path[1] == ':';   // C:\pictures\cat.png
+#else
+    return !path.empty() && path[0] == '/';     // /home/me/cat.png
+#endif
+}
+
+static string resolveImagePath(const string& baseDir, const string& src) {
+    if (isAbsolutePath(src) || baseDir.empty()) return src;
+    return joinPath(baseDir, src);
+}
+
+void Graphics::setBaseDirectory(const string& dir) {
+    m_baseDir = dir;
+}
+
+void Graphics::clearImageCache() {
+    // The GL context is alive whenever we are initialized, so this is a safe
+    // place to hand the textures back to the driver.
+    if (m_initialized) {
+        for (std::unordered_map<string, CachedImage>::const_iterator it = m_images.begin();
+             it != m_images.end(); ++it) {
+            unsigned int id = it->second.id;
+            if (id != 0) glDeleteTextures(1, &id);
+        }
+    }
+    m_images.clear();
+}
+
+bool Graphics::getImageTexture(const string& src, ImTextureID& texture, ImVec2& size) {
+    if (!m_initialized || src.empty() || isRemoteReference(src)) return false;
+
+    const string path = resolveImagePath(m_baseDir, src);
+
+    // Already decoded and uploaded? Then this frame costs one map lookup.
+    std::unordered_map<string, CachedImage>::const_iterator cached = m_images.find(path);
+    if (cached != m_images.end()) {
+        texture = static_cast<ImTextureID>(static_cast<intptr_t>(cached->second.id));
+        size = ImVec2(cached->second.width, cached->second.height);
+        return true;
+    }
+
+    int width = 0;
+    int height = 0;
+    int fileChannels = 0;
+    // Always decode to RGBA: ImGui's renderer expects four components, and a
+    // grayscale PNG or a palette GIF would otherwise come out with wrong
+    // strides. (fileChannels only receives the source channel count.)
+    unsigned char* pixels = stbi_load(path.c_str(), &width, &height, &fileChannels, 4);
+    if (!pixels || width <= 0 || height <= 0) {
+        if (pixels) stbi_image_free(pixels);
+        return false;   // missing file, broken file, or not an image at all
+    }
+
+    unsigned int id = 0;
+    glGenTextures(1, &id);
+    if (id == 0) {
+        stbi_image_free(pixels);
+        return false;
+    }
+
+    glBindTexture(GL_TEXTURE_2D, id);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    stbi_image_free(pixels);
+
+    CachedImage image;
+    image.id = id;
+    image.width = static_cast<float>(width);
+    image.height = static_cast<float>(height);
+    m_images[path] = image;
+
+    texture = static_cast<ImTextureID>(static_cast<intptr_t>(id));
+    size = ImVec2(image.width, image.height);
+    return true;
+}
+
+// imgui_md calls this for every ![alt](path) it meets. Returning false makes it
+// skip the image entirely — imgui_md suppresses the alt text too (render_text()
+// bails out while m_is_image is set), so a missing, unreadable or remote image
+// simply leaves the paragraph without it, never a crash or a broken placeholder.
+bool MarkdownRenderer::get_image(image_info& nfo) const {
+    if (m_graphics == nullptr) return false;
+
+    ImTextureID texture = ImTextureID_Invalid;
+    ImVec2 size(0.0f, 0.0f);
+    if (!m_graphics->getImageTexture(m_href, texture, size)) return false;
+
+    nfo.texture_id = texture;
+    nfo.size = size;
+    nfo.uv0 = ImVec2(0.0f, 0.0f);
+    nfo.uv1 = ImVec2(1.0f, 1.0f);
+    nfo.col_tint = ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
+    nfo.col_border = ImVec4(0.0f, 0.0f, 0.0f, 0.0f);
+    return true;
 }
 
 // ---------------------------------------------------------------------------
