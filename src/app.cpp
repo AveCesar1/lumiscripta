@@ -8,10 +8,31 @@
 #include "imgui/backends/imgui_impl_glfw.h"
 #include "imgui/backends/imgui_impl_opengl3.h"
 #include "IconsFontAwesome/IconsFontAwesome7.h"
+// Declarations only: the STB_IMAGE_IMPLEMENTATION half lives in graphics.cpp.
+#include "stb/stb_image.h"
 #include <functional>
 #include <cstdio>
 #include <iostream>
 #include <memory>
+
+// Draw the branding wordmark at the current cursor, scaled to 'targetHeight'
+// with its aspect ratio preserved (the art's pixel size never matters). Passing
+// 'availableWidth' > 0 centres it horizontally in that width.
+static bool drawWordmark(Graphics* graphics, Theme theme, float targetHeight, float availableWidth) {
+    if (graphics == nullptr || targetHeight <= 0.0f) return false;
+
+    ImTextureID texture = ImTextureID_Invalid;
+    ImVec2 natural(0.0f, 0.0f);
+    if (!graphics->getWordmarkTexture(theme, texture, natural) || natural.y <= 0.0f) return false;
+
+    const ImVec2 size(targetHeight * (natural.x / natural.y), targetHeight);
+    if (availableWidth > 0.0f) {
+        const float centre = (availableWidth - size.x) * 0.5f;
+        if (centre > 0.0f) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + centre);
+    }
+    ImGui::Image(texture, size);
+    return true;
+}
 
 static string chooseFilePath() {
     const char* command = nullptr;
@@ -63,6 +84,27 @@ bool LumiscriptaApp::init() {
 
     glfwMakeContextCurrent(m_window);
     glfwSwapInterval(1);
+
+    // Window (taskbar) icon. GLFW applies it on Windows and X11; macOS and
+    // Wayland ignore the call and take the icon from the executable's bundle or
+    // desktop entry instead (installed by `make install` / `make macos-bundle`).
+    {
+        const string iconPath = resolveAsset("branding/logo-light.png");
+        int width = 0;
+        int height = 0;
+        int channels = 0;
+        unsigned char* pixels = iconPath.empty()
+            ? nullptr
+            : stbi_load(iconPath.c_str(), &width, &height, &channels, 4);
+        if (pixels && width > 0 && height > 0) {
+            GLFWimage icon;
+            icon.width = width;
+            icon.height = height;
+            icon.pixels = pixels;
+            glfwSetWindowIcon(m_window, 1, &icon);
+        }
+        if (pixels) stbi_image_free(pixels);
+    }
 
     m_graphics = std::make_unique<Graphics>();
     if (!m_graphics->init(m_window)) {
@@ -216,10 +258,18 @@ void LumiscriptaApp::renderMenuBar() {
     draw->AddRectFilled(p0, p1, bgCol);
     draw->AddLine(ImVec2(p0.x, p1.y), ImVec2(p1.x, p1.y), borderCol, 1.0f);
 
+    // Wordmark instead of the app name. It is scaled to the height of the
+    // "Open" button next to it and shares the same line, so it is centred
+    // vertically in the bar whatever the art's pixel size is. Which of the two
+    // wordmarks is used follows the theme (dark art on the dark palette).
+    const float barBtnHeight = 28.0f;
     ImGui::SetCursorScreenPos(ImVec2(p0.x + 20, p0.y + 6));
-    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetColorU32(ImGuiCol_Text));
-    ImGui::TextUnformatted("Lumiscripta");
-    ImGui::PopStyleColor();
+    const Theme currentTheme = m_graphics ? m_graphics->getTheme() : Theme::Light;
+    if (!drawWordmark(m_graphics.get(), currentTheme, barBtnHeight, 0.0f)) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetColorU32(ImGuiCol_Text));
+        ImGui::TextUnformatted("Lumiscripta");   // fallback: art not installed
+        ImGui::PopStyleColor();
+    }
 
     ImGui::SameLine(0.0f, 24.0f);
     ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyle().Colors[ImGuiCol_FrameBg]);
@@ -298,14 +348,15 @@ void LumiscriptaApp::renderWelcome() {
         ImGuiWindowFlags_NoNavFocus |
         ImGuiWindowFlags_NoScrollbar);
 
-    // Center horizontally: compute offset from content region.
-    if (g_font_bold_large) ImGui::PushFont(g_font_bold_large);
+    // Wordmark instead of the app name: scaled to the window, centred, and
+    // theme-aware like the top bar's copy.
     float avail = ImGui::GetContentRegionAvail().x;
-    float textW = ImGui::CalcTextSize("Lumiscripta").x;
-    float offset = (avail - textW) * 0.5f;
-    if (offset > 0) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + offset);
-    ImGui::TextColored(ImVec4(0.28f, 0.22f, 0.16f, 1.0f), "Lumiscripta");
-    if (g_font_bold_large) ImGui::PopFont();
+    const Theme welcomeTheme = m_graphics ? m_graphics->getTheme() : Theme::Light;
+    if (!drawWordmark(m_graphics.get(), welcomeTheme, viewport->WorkSize.y * 0.12f, avail)) {
+        if (g_font_bold_large) ImGui::PushFont(g_font_bold_large);
+        ImGui::TextColored(ImVec4(0.28f, 0.22f, 0.16f, 1.0f), "Lumiscripta");
+        if (g_font_bold_large) ImGui::PopFont();
+    }
 
     ImGui::Spacing();
     float wTextW = ImGui::CalcTextSize("Welcome").x;

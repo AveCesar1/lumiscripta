@@ -148,3 +148,25 @@ install: all
 	install -d $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(PREFIX)/share/lumiscripta
 	install -m 755 $(TARGET) $(DESTDIR)$(PREFIX)/bin/$(TARGET)
 	cp -R assets $(DESTDIR)$(PREFIX)/share/lumiscripta/
+	# Desktop integration (icons for taskbars/docks where the window icon is
+	# not taken from the executable): the .desktop entry names the icon
+	# 'lumiscripta', which is installed into the hicolor theme.
+	install -d $(DESTDIR)$(PREFIX)/share/applications
+	install -m 644 assets/lumiscripta.desktop $(DESTDIR)$(PREFIX)/share/applications/lumiscripta.desktop
+	install -d $(DESTDIR)$(PREFIX)/share/icons/hicolor/256x256/apps
+	install -m 644 assets/branding/logo-light.png $(DESTDIR)$(PREFIX)/share/icons/hicolor/256x256/apps/lumiscripta.png
+
+# macOS: regular windows cannot have runtime icons, so the taskbar/dock icon
+# can only come from an app bundle. This packages Lumiscripta.app with the
+# logo converted to .icns (unverified locally — needs macOS + sips/iconutil).
+macos-bundle: all
+	@rm -rf Lumiscripta.app
+	@mkdir -p Lumiscripta.app/Contents/MacOS Lumiscripta.app/Contents/Resources
+	@cp $(TARGET) Lumiscripta.app/Contents/MacOS/
+	@cp -R assets Lumiscripta.app/Contents/Resources/
+	@printf '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n<dict>\n\t<key>CFBundleName</key>\n\t<string>Lumiscripta</string>\n\t<key>CFBundleExecutable</key>\n\t<string>lumiscripta</string>\n\t<key>CFBundleIdentifier</key>\n\t<string>com.lausdeo.lumiscripta</string>\n\t<key>CFBundleIconFile</key>\n\t<string>lumiscripta</string>\n\t<key>LSMinimumSystemVersion</key>\n\t<string>10.13</string>\n</dict>\n</plist>\n' > Lumiscripta.app/Contents/Info.plist
+	@mkdir -p /tmp/lumiscripta-icon.iconset
+	@for px in 16 32 128 256 512; do sips -z $$px $$px assets/branding/logo-light.png --out /tmp/lumiscripta-icon.iconset/icon_$${px}x$${px}.png >/dev/null; done
+	@iconutil -c icns /tmp/lumiscripta-icon.iconset -o Lumiscripta.app/Contents/Resources/lumiscripta.icns
+	@rm -rf /tmp/lumiscripta-icon.iconset
+	@echo 'Lumiscripta.app built (macOS only; needs sips+iconutil).'

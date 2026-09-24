@@ -205,6 +205,12 @@ public:
     bool getImageTexture(const string& src, ImTextureID& texture, ImVec2& size,
                          ImageError* error = nullptr);
 
+    // Branding wordmark for the app's own chrome (welcome screen and top bar).
+    // Returns the natural pixel size; the caller scales it and keeps the aspect
+    // ratio. 'theme' picks the version that reads on the current background
+    // (light art for the light theme, dark art for the dark theme).
+    bool getWordmarkTexture(Theme theme, ImTextureID& texture, ImVec2& size);
+
 private:
     ImGuiContext* m_ctx;
     GLFWwindow* m_window;
@@ -219,6 +225,16 @@ private:
     };
     std::unordered_map<string, CachedImage> m_images;
     string m_baseDir;
+
+    // Branding art paths, resolved once at init (absolute or cwd-relative, never
+    // joined to the document directory).
+    string m_wordmarkLightPath;
+    string m_wordmarkDarkPath;
+
+    // Cache + decode + upload, with 'path' used exactly as given. Shared by the
+    // markdown images (which resolve against the document first) and the
+    // branding art (which is already resolved).
+    bool loadTexture(const string& path, ImTextureID& texture, ImVec2& size, ImageError* error);
 
     void setupStyleLight();
     void setupStyleDark();

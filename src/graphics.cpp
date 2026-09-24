@@ -431,6 +431,12 @@ bool Graphics::init(GLFWwindow* window) {
         io2.Fonts->Build();
     }
 
+    // Branding art for the app's own chrome (welcome screen and top bar). The
+    // textures themselves are decoded lazily by getWordmarkTexture(); only the
+    // paths are resolved here.
+    m_wordmarkLightPath = resolveAsset("branding/wordmark-light.png");
+    m_wordmarkDarkPath = resolveAsset("branding/wordmark-dark.png");
+
     applyTheme(Theme::Light);
     m_initialized = true;
     return true;
@@ -641,8 +647,19 @@ bool Graphics::getImageTexture(const string& src, ImTextureID& texture, ImVec2& 
         return false;
     }
 
-    const string path = resolveImagePath(m_baseDir, src);
+    return loadTexture(resolveImagePath(m_baseDir, src), texture, size, error);
+}
 
+// Branding art is resolved against the assets folder, not the document, so it
+// must not go through resolveImagePath(). Everything else is the same pipeline.
+bool Graphics::getWordmarkTexture(Theme theme, ImTextureID& texture, ImVec2& size) {
+    const string& path = (theme == Theme::Dark) ? m_wordmarkDarkPath : m_wordmarkLightPath;
+    if (!m_initialized || path.empty()) return false;
+    return loadTexture(path, texture, size, nullptr);
+}
+
+bool Graphics::loadTexture(const string& path, ImTextureID& texture, ImVec2& size,
+                           ImageError* error) {
     // Already decoded and uploaded? Then this frame costs one map lookup.
     std::unordered_map<string, CachedImage>::const_iterator cached = m_images.find(path);
     if (cached != m_images.end()) {
