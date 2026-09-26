@@ -1,2 +1,4 @@
 RESUME.md
 build/
+.vscode/
+.DS_Store
