@@ -12,6 +12,9 @@
 #include "stb/stb_image.h"
 #include <functional>
 #include <cstdio>
+#include <cstdlib>   // std::system, for the browser and file-manager launchers
+#include <cfloat>    // FLT_MAX, in the dialog's text measuring helper
+#include <cstring>   // std::strlen
 #include <iostream>
 #include <memory>
 
@@ -56,9 +59,75 @@ static string chooseFilePath() {
     return path;
 }
 
+// ---------------------------------------------------------------------------
+// Launchers
+//
+// Opening a browser or a file manager is a job for the OS, and neither is worth
+// a dependency: the file picker above shells out the same way. Everything that
+// comes from a document is quoted before it reaches the shell.
+// ---------------------------------------------------------------------------
+
+#ifndef _WIN32
+// Single-quote a value for /bin/sh. URIs and paths may contain spaces,
+// apostrophes or other metacharacters; quoting keeps them arguments instead of
+// shell syntax.
+static string shellQuote(const string& value) {
+    string quoted = "'";
+    for (size_t i = 0; i < value.size(); ++i) {
+        if (value[i] == '\'') quoted += "'\\''";   // close, escape, reopen
+        else quoted += value[i];
+    }
+    return quoted + "'";
+}
+#endif
+
+// Open a web address with the platform's default browser.
+static void openInBrowser(const string& url) {
+    if (url.empty()) return;
+#ifdef _WIN32
+    // 'start' takes the window title as its first argument; without the empty
+    // pair a quoted URL would be read as that title instead of the target.
+    const string command = "start \"\" \"" + url + "\"";
+#elif defined(__APPLE__)
+    const string command = "open " + shellQuote(url);
+#else
+    // xdg-open can stay in the foreground for as long as the browser lives, so
+    // the command is detached from the app.
+    const string command = "xdg-open " + shellQuote(url) + " >/dev/null 2>&1 &";
+#endif
+    if (std::system(command.c_str()) != 0) {
+        std::cerr << "Could not open the link: " << url << "\n";
+    }
+}
+
+// Show 'path' in the platform's file manager — revealed, never opened.
+static void revealInFileManager(const string& path) {
+    if (path.empty()) return;
+#ifdef _WIN32
+    // explorer reports a non-zero exit code even when it succeeds, so its status
+    // is deliberately ignored.
+    const string command = "explorer /select,\"" + path + "\"";
+    std::system(command.c_str());
+#elif defined(__APPLE__)
+    const string command = "open -R " + shellQuote(path);
+    if (std::system(command.c_str()) != 0) {
+        std::cerr << "Could not reveal the file: " << path << "\n";
+    }
+#else
+    // Prefer a file manager that can select the file; fall back to opening the
+    // containing folder. Detached for the same reason as above.
+    const string command =
+        "( dolphin --select " + shellQuote(path) +
+        " || nautilus --select " + shellQuote(path) +
+        " || xdg-open " + shellQuote(parentDirectory(path)) +
+        " ) >/dev/null 2>&1 &";
+    std::system(command.c_str());
+#endif
+}
+
 LumiscriptaApp::LumiscriptaApp()
         : m_file(nullptr), m_graphics(nullptr), m_window(nullptr), m_viewMode(ViewMode::Welcome),
-            m_running(false) {}
+            m_running(false), m_linkTarget(LinkTarget::None) {}
 
 LumiscriptaApp::~LumiscriptaApp() {}
 
@@ -190,6 +259,10 @@ ViewMode LumiscriptaApp::getViewMode() const {
 }
 
 void LumiscriptaApp::processInput() {
+    // While the link dialog is up, the keyboard belongs to it: Enter accepts and
+    // the arrow keys move between the buttons.
+    if (m_linkTarget != LinkTarget::None) return;
+
     ImGuiIO& io = ImGui::GetIO();
     bool ctrlOrCmd = io.KeyCtrl || io.KeySuper;
 
@@ -432,4 +505,263 @@ void LumiscriptaApp::renderUI() {
     ImGui::PopStyleVar();
 
     renderMenuBar();
+
+    // A hyperlink click from this frame becomes a dialog (or a file-manager
+    // reveal) here, and the dialog is drawn if one is waiting.
+    processLinkRequests();
+    renderLinkDialog();
+}
+
+// ---------------------------------------------------------------------------
+// Hyperlinks clicked in the preview
+//
+// imgui_md reports a click through MarkdownRenderer::open_url(), which queues the
+// target on Graphics: the click happens inside a render pass and the answer to it
+// is a dialog, so it cannot be dealt with right there. On the next frame the app
+// decides what the target is —
+//   - a web address         -> confirm, then the default browser
+//   - a local markdown file -> confirm, then it replaces the open document
+//   - any other local file  -> revealed in the OS file manager, no question asked
+// ---------------------------------------------------------------------------
+
+static bool looksLikeWebAddress(const string& href) {
+    return href.find("://") != string::npos;   // http, https, ftp, ...
+}
+
+static bool isMarkdownFile(const string& path) {
+    const string extension = fileExtension(path);
+    return extension == "md" || extension == "markdown";
+}
+
+// '#' starts a fragment ("notes.md#setup"). The app does not scroll to anchors,
+// so only the part before it addresses a file.
+static string stripFragment(const string& href) {
+    const size_t hash = href.find('#');
+    return (hash == string::npos) ? href : href.substr(0, hash);
+}
+
+// Absolute paths are used as they are, everything else is relative to the open
+// document — the same rule the preview images follow.
+static string resolveLinkPath(const string& documentPath, const string& href) {
+    const string target = stripFragment(href);
+    if (target.empty()) return string();
+    if (isAbsolutePath(target)) return target;
+    return joinPath(parentDirectory(documentPath), target);
+}
+
+void LumiscriptaApp::processLinkRequests() {
+    string href;
+    if (!m_graphics || !m_graphics->takePendingLink(href)) return;
+
+    if (looksLikeWebAddress(href)) {
+        m_linkTarget = LinkTarget::Web;
+        m_linkHref = href;
+        m_linkPath.clear();
+        return;
+    }
+
+    const string path = resolveLinkPath(m_file ? m_file->getPath() : string(), href);
+    if (path.empty() || !pathExists(path)) {
+        // A scheme the app cannot act on (mailto:, tel:, ...) or a path that is
+        // not on disk: nothing to open, nothing to confirm.
+        std::cerr << "Link target not found: " << href << "\n";
+        return;
+    }
+
+    if (isMarkdownFile(path)) {
+        m_linkTarget = LinkTarget::Document;
+        m_linkHref = href;
+        m_linkPath = path;
+        return;
+    }
+
+    // Some other local file: show it in the file manager, never open it.
+    revealInFileManager(path);
+}
+
+void LumiscriptaApp::performLinkAction() {
+    switch (m_linkTarget) {
+        case LinkTarget::Web:
+            openInBrowser(m_linkHref);
+            break;
+        case LinkTarget::Document:
+            // Exactly what picking this path in the Open dialog does.
+            loadFile(m_linkPath);
+            break;
+        default:
+            break;
+    }
+
+    m_linkTarget = LinkTarget::None;
+    m_linkHref.clear();
+    m_linkPath.clear();
+}
+
+// ---------------------------------------------------------------------------
+// Dialog layout helper
+//
+// Two constraints shape this: the app's windows carry zero padding (the global
+// style leaves every inset to the individual window), and ImGui cannot both wrap
+// and centre text — TextUnformatted never wraps and TextWrapped only left-aligns.
+// So each line is measured with the font's own word-wrap rule and drawn at the
+// requested alignment. Note that ItemSize() adds Style.ItemSpacing.y to every
+// cursor advance; the dialog pushes that spacing to zero and spaces its blocks
+// with explicit Dummy() calls, so every vertical gap stays a deliberate number.
+// ---------------------------------------------------------------------------
+
+// Word-wrap 'text' to 'wrap_width' pixels at 'font' and return the height it
+// occupies. With 'draw' set, the lines are painted from 'left_x' — centred inside
+// the wrap width when 'centre' is set — and the cursor is advanced past them.
+static float layoutWrappedText(ImFont* font, const char* text, const ImVec4& color,
+                               float left_x, float wrap_width, bool centre, bool draw) {
+    if (font == nullptr) font = ImGui::GetFont();
+    if (text == nullptr || *text == '\0' || wrap_width <= 0.0f) return 0.0f;
+
+    // The size comes from the pushed font: ImFont has no FontSize member in 1.92+,
+    // and GetFontSize() is the value that already carries the user's zoom.
+    ImGui::PushFont(font);
+    const float size = ImGui::GetFontSize();
+    const float line_height = size * 1.35f;
+    const char* const text_end = text + std::strlen(text);
+    ImDrawList* draw_list = draw ? ImGui::GetWindowDrawList() : nullptr;
+    const ImU32 col = draw ? ImGui::GetColorU32(color) : 0u;
+
+    float height = 0.0f;
+    const char* line = text;
+    while (line < text_end) {
+        const char* line_end = font->CalcWordWrapPosition(size, line, text_end, wrap_width);
+        if (line_end <= line) line_end = line + 1;
+
+        // A token wider than the wrap width (a path without spaces) would spill
+        // over the margin: trim it back until it fits.
+        while (line_end - line > 1 &&
+               font->CalcTextSizeA(size, FLT_MAX, 0.0f, line, line_end).x > wrap_width) {
+            --line_end;
+        }
+
+        if (draw) {
+            const float line_w = font->CalcTextSizeA(size, FLT_MAX, 0.0f, line, line_end).x;
+            const float x = centre ? left_x + (wrap_width - line_w) * 0.5f : left_x;
+            draw_list->AddText(font, size, ImVec2(x, ImGui::GetCursorScreenPos().y),
+                               col, line, line_end);
+            ImGui::Dummy(ImVec2(0.0f, line_height));
+        }
+        height += line_height;
+
+        line = line_end;
+        while (line < text_end && (*line == ' ' || *line == '\n')) ++line;
+    }
+    ImGui::PopFont();
+    return height;
+}
+
+void LumiscriptaApp::renderLinkDialog() {
+    if (m_linkTarget == LinkTarget::None) return;
+
+    // Centred in the viewport; a fixed width so the wording never reflows oddly,
+    // and a fitted height so the block keeps one silhouette for every target.
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(viewport->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(460.0f, 0.0f), ImGuiCond_Appearing);
+
+    const char* dialogId = "Open link";
+    if (!ImGui::IsPopupOpen(dialogId)) ImGui::OpenPopup(dialogId);
+
+    bool accepted = false;
+    bool dismissed = false;
+
+    // The dialog supplies both insets the global style delegates to each window:
+    // margins from the border, and zero item spacing so every gap below is an
+    // explicit number rather than a remainder (see layoutWrappedText).
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(34.0f, 24.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,
+                        ImVec2(ImGui::GetStyle().ItemSpacing.x, 0.0f));
+
+    // No stock title bar: its label is left-aligned and reads as an afterthought.
+    // The question itself is the header — centred, bold, wrapped line by line.
+    if (ImGui::BeginPopupModal(dialogId, nullptr,
+            ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+            ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings)) {
+
+        const bool web = (m_linkTarget == LinkTarget::Web);
+        const char* question = web
+            ? "Open this link in your default browser?"
+            : "Open this document and replace the current one?";
+        const char* target = web ? m_linkHref.c_str() : m_linkPath.c_str();
+
+        const ImGuiStyle& style = ImGui::GetStyle();
+        const float content_x = ImGui::GetCursorScreenPos().x;
+        const float content_w = ImGui::GetContentRegionAvail().x;
+
+        // 1. Header — centred and bold.
+        layoutWrappedText(g_font_bold, question, style.Colors[ImGuiCol_Text],
+                          content_x, content_w, true, true);
+
+        // 2. Address or path — an inset chip in the monospaced face so it reads as
+        //    data rather than prose. Its edges line up with the rule below.
+        if (target != nullptr && *target != '\0') {
+            ImGui::Dummy(ImVec2(0.0f, 14.0f));
+            const ImVec2 pad(12.0f, 9.0f);
+            const float text_w = content_w - pad.x * 2.0f;
+            const ImVec2 chip_pos = ImGui::GetCursorScreenPos();
+            const float text_h = layoutWrappedText(g_font_mono, target,
+                style.Colors[ImGuiCol_TextDisabled], chip_pos.x + pad.x, text_w, false, false);
+            const ImVec2 chip_size(content_w, text_h + pad.y * 2.0f);
+
+            ImGui::GetWindowDrawList()->AddRectFilled(chip_pos,
+                ImVec2(chip_pos.x + chip_size.x, chip_pos.y + chip_size.y),
+                ImGui::GetColorU32(ImGuiCol_FrameBg), style.FrameRounding);
+
+            ImGui::SetCursorScreenPos(ImVec2(chip_pos.x + pad.x, chip_pos.y + pad.y));
+            layoutWrappedText(g_font_mono, target, style.Colors[ImGuiCol_TextDisabled],
+                              chip_pos.x + pad.x, text_w, false, true);
+            ImGui::SetCursorScreenPos(ImVec2(chip_pos.x + chip_size.x, chip_pos.y + chip_size.y));
+        }
+
+        // 3. Rule — inset like everything else (Separator spans the padded width).
+        ImGui::Dummy(ImVec2(0.0f, 16.0f));
+        ImGui::Separator();
+        ImGui::Dummy(ImVec2(0.0f, 14.0f));
+
+        // 4. Actions — the centred pair the welcome screen uses. Accept carries a
+        //    hairline border (the top bar's active-segment treatment); Cancel is
+        //    the ghost button the theme switch uses.
+        const float button_width = 110.0f;
+        const float button_gap = 12.0f;
+        const float offset =
+            (ImGui::GetContentRegionAvail().x - (button_width * 2.0f + button_gap)) * 0.5f;
+        if (offset > 0.0f) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + offset);
+
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
+        if (ImGui::Button("Accept", ImVec2(button_width, 36.0f))) accepted = true;
+        ImGui::PopStyleVar();
+        // Accept is the default item; that is what lets a bare Enter confirm.
+        ImGui::SetItemDefaultFocus();
+
+        ImGui::SameLine(0.0f, button_gap);
+        // Ghost button, the treatment the top bar gives its theme switch.
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, style.Colors[ImGuiCol_FrameBg]);
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, style.Colors[ImGuiCol_FrameBgActive]);
+        if (ImGui::Button("Cancel", ImVec2(button_width, 36.0f))) dismissed = true;
+        ImGui::PopStyleColor(3);
+
+        // The arrow keys walk between the two buttons (keyboard navigation is on),
+        // Enter confirms even after the focus moved, Escape dismisses.
+        if (ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter)) {
+            accepted = true;
+        }
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape)) dismissed = true;
+
+        if (accepted || dismissed) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    } else {
+        // Gone without an answer (Escape closed it): nothing was confirmed.
+        dismissed = true;
+    }
+
+    ImGui::PopStyleVar(2);   // WindowPadding + ItemSpacing
+
+    if (accepted) performLinkAction();
+    else if (dismissed) m_linkTarget = LinkTarget::None;
 }

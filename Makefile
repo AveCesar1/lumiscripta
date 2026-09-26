@@ -19,6 +19,14 @@ CXXFLAGS := -std=c++17 -Wall -Wextra -pedantic -O2 \
             -DIMGUI_ENABLE_FREETYPE -DIMGUI_USE_WCHAR32
 CCFLAGS  := -O2 -Wall
 
+# Header dependency tracking. Each object also records the headers it included
+# (-MMD, applied in the compile rules below) and those records are read back at the
+# end of this file (-include), so touching a header rebuilds every translation unit
+# that uses it. Without this, adding a member to app.h leaves main.o — the one unit
+# that includes app.h and little else — compiled against the old class layout, and
+# the app then writes past the end of the object it allocated on main's stack.
+DEPFLAGS := -MMD -MP
+
 # FreeType discovery. pkg-config covers Linux and Homebrew/Intel-mac; the
 # fallback covers MacPorts and Homebrew-on-Apple-Silicon where pkg-config may
 # not be installed or may not be on the path.
@@ -78,6 +86,12 @@ OBJS := $(patsubst $(SRCDIR)/%.cpp,$(BUILDDIR)/src/%.o,$(SRCS)) \
         $(patsubst third_party/md4c/src/%.c,$(BUILDDIR)/md4c/%.o,$(MD4C_SRCS)) \
         $(patsubst third_party/imgui_md/%.cpp,$(BUILDDIR)/imgui_md/%.o,$(IMGUI_MD_SRCS))
 
+# One dependency file per object, written by -MMD. They are read back in at the
+# very end of this file: an -include placed before the rules would let the first
+# target of the first .d file (build/src/app.o) become make's default goal, and
+# 'make' would then rebuild that object without ever relinking the binary.
+DEPS := $(OBJS:.o=.d)
+
 UNAME_S := $(shell uname -s 2>/dev/null || echo Unknown)
 
 # -----------------------------------------------------------------------------
@@ -105,6 +119,9 @@ endif
 # -----------------------------------------------------------------------------
 .PHONY: all clean run install
 
+# Explicit, so nothing that gets included later can steal the default goal.
+.DEFAULT_GOAL := all
+
 all: $(TARGET)
 
 $(TARGET): $(OBJS)
@@ -114,22 +131,22 @@ $(TARGET): $(OBJS)
 # Project sources
 $(BUILDDIR)/src/%.o: $(SRCDIR)/%.cpp | $(BUILDDIR)
 	@mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) $(INCFLAGS) -c $< -o $@
+	$(CXX) $(CXXFLAGS) $(DEPFLAGS) $(INCFLAGS) -c $< -o $@
 
 # ImGui sources
 $(BUILDDIR)/imgui/%.o: third_party/imgui/%.cpp | $(BUILDDIR)
 	@mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) $(INCFLAGS) -c $< -o $@
+	$(CXX) $(CXXFLAGS) $(DEPFLAGS) $(INCFLAGS) -c $< -o $@
 
 # md4c (C)
 $(BUILDDIR)/md4c/%.o: third_party/md4c/src/%.c | $(BUILDDIR)
 	@mkdir -p $(dir $@)
-	$(CC) $(CCFLAGS) $(INCFLAGS) -c $< -o $@
+	$(CC) $(CCFLAGS) $(DEPFLAGS) $(INCFLAGS) -c $< -o $@
 
 # imgui_md
 $(BUILDDIR)/imgui_md/%.o: third_party/imgui_md/%.cpp | $(BUILDDIR)
 	@mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) $(INCFLAGS) -c $< -o $@
+	$(CXX) $(CXXFLAGS) $(DEPFLAGS) $(INCFLAGS) -c $< -o $@
 
 $(BUILDDIR):
 	mkdir -p $(BUILDDIR)/src $(BUILDDIR)/imgui/backends $(BUILDDIR)/imgui/misc/cpp $(BUILDDIR)/md4c $(BUILDDIR)/imgui_md
@@ -170,3 +187,5 @@ macos-bundle: all
 	@iconutil -c icns /tmp/lumiscripta-icon.iconset -o Lumiscripta.app/Contents/Resources/lumiscripta.icns
 	@rm -rf /tmp/lumiscripta-icon.iconset
 	@echo 'Lumiscripta.app built (macOS only; needs sips+iconutil).'
+# Header dependencies, last: their targets can never become the default goal.
+-include $(DEPS)

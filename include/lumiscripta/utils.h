@@ -113,6 +113,18 @@ inline string joinPath(const string& dir, const string& name) {
 	return dir + "/" + name;
 }
 
+// True when 'path' is absolute for the platform the app was built for
+// ("/home/me/notes.md" on POSIX, "C:\notes.md" on Windows). Images and
+// hyperlinks resolve relative paths the same way, so the rule lives here with
+// the other path helpers.
+inline bool isAbsolutePath(const string& path) {
+#ifdef _WIN32
+	return path.size() > 1 && path[1] == ':';
+#else
+	return !path.empty() && path[0] == '/';
+#endif
+}
+
 // True if 'path' can be opened for reading.
 inline bool pathExists(const string& path) {
 	if (path.empty()) return false;

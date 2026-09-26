@@ -584,7 +584,21 @@ void Graphics::renderPreview(const std::string& content) {
         // imgui_md never tells the renderer who owns it; this is the hook that
         // lets it find the image cache.
         s_renderer.setGraphics(this);
+
+        // The hyperlink *text* colour comes from MarkdownRenderer::get_color()
+        // (ImGuiCol_TextLink). The underline is drawn by imgui_md's static
+        // line() helper, which reads ImGuiCol_Button / ImGuiCol_ButtonHovered
+        // and cannot be overridden. Those two slots are used for nothing but
+        // hyperlink underlines inside imgui_md, so scoping them to the link
+        // colour keeps a link one colour from text to underline; the preview
+        // content never contains an ImGui button, so nothing else is affected.
+        const ImVec4 linkColor = ImGui::GetStyle().Colors[ImGuiCol_TextLink];
+        ImGui::PushStyleColor(ImGuiCol_Button, linkColor);
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, linkColor);
+
         s_renderer.print(content.c_str(), content.c_str() + content.size());
+
+        ImGui::PopStyleColor(2);
     } else {
         ImGui::TextDisabled("No file loaded. Use File -> Open or pass a path on the command line.");
     }
@@ -606,16 +620,9 @@ static bool isRemoteReference(const string& src) {
     return src.find("://") != string::npos;
 }
 
-// Absolute paths are left alone, everything else is relative to the markdown
-// file that referenced it.
-static bool isAbsolutePath(const string& path) {
-#ifdef _WIN32
-    return path.size() > 1 && path[1] == ':';   // C:\pictures\cat.png
-#else
-    return !path.empty() && path[0] == '/';     // /home/me/cat.png
-#endif
-}
-
+// Absolute paths are used as they are, everything else is relative to the
+// markdown file that referenced it; isAbsolutePath() is shared with the hyperlink
+// handling in app.cpp and lives in utils.h.
 static string resolveImagePath(const string& baseDir, const string& src) {
     if (isAbsolutePath(src) || baseDir.empty()) return src;
     return joinPath(baseDir, src);
@@ -764,8 +771,42 @@ bool MarkdownRenderer::get_image(image_info& nfo) const {
 }
 
 // ---------------------------------------------------------------------------
+// Hyperlinks clicked in the preview
+// ---------------------------------------------------------------------------
+
+void MarkdownRenderer::open_url() const {
+    // imgui_md reports clicks on images through this callback as well (SPAN_IMG),
+    // but a click on an image is not a click on a link — the base class drew the
+    // same distinction. Only link clicks are forwarded to the app.
+    if (m_is_image) return;
+
+    if (m_graphics != nullptr) {
+        m_graphics->requestOpenLink(m_href);
+    }
+}
+
+void Graphics::requestOpenLink(const string& href) {
+    if (!href.empty()) m_pendingLink = href;
+}
+
+bool Graphics::takePendingLink(string& href) {
+    if (m_pendingLink.empty()) return false;
+    href = m_pendingLink;
+    m_pendingLink.clear();
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 // Style helpers
 // ---------------------------------------------------------------------------
+
+// Hyperlink colour, shared by *both* themes: a bright neon purple that keeps a
+// readable contrast on the warm cream canvas (light) and on the slate one
+// (dark), so links never change colour when the theme is toggled. ImGui's own
+// TextLink() widget derives its hover/held shades from this single colour (HSV
+// brightening), and the preview links read it through
+// MarkdownRenderer::get_color(), so this is the one place to tune hyperlinks.
+static const ImVec4 kLinkColor(147.0f / 255.0f, 51.0f / 255.0f, 234.0f / 255.0f, 1.0f); // #9333EA
 
 static void setupStyleCommon() {
     ImGuiStyle& style = ImGui::GetStyle();
@@ -827,6 +868,10 @@ void Graphics::setupStyleLight() {
     // visible instead of the alpha-0 placeholder slot left by the ImGuiStyle
     // constructor.
     style.Colors[ImGuiCol_InputTextCursor] = text;
+
+    // Hyperlinks (preview text and ImGui's own TextLink widget): the shared
+    // neon purple, in both themes.
+    style.Colors[ImGuiCol_TextLink] = kLinkColor;
 
     style.Colors[ImGuiCol_FrameBg] = surface;
     style.Colors[ImGuiCol_FrameBgHovered] = surfaceHover;
@@ -910,6 +955,10 @@ void Graphics::setupStyleDark() {
     // input-text caret (drawn by ImGui, blinking, correctly positioned) is
     // visible in both themes.
     style.Colors[ImGuiCol_InputTextCursor] = text;
+
+    // Hyperlinks (preview text and ImGui's own TextLink widget): the same
+    // shared neon purple as the light theme.
+    style.Colors[ImGuiCol_TextLink] = kLinkColor;
 
     style.Colors[ImGuiCol_FrameBg] = surface;
     style.Colors[ImGuiCol_FrameBgHovered] = surfaceHover;

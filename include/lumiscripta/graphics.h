@@ -71,6 +71,17 @@ public:
         }
     }
 
+    // Hyperlink text in the preview. imgui_md would colour links with
+    // ImGuiCol_ButtonHovered (a washed-out tan on the light palette, nearly
+    // invisible on the dark one); links use ImGuiCol_TextLink instead — the same
+    // neon purple in both themes (kLinkColor in graphics.cpp).
+    ImVec4 get_color() const override {
+        if (!m_href.empty()) {
+            return ImGui::GetStyle().Colors[ImGuiCol_TextLink];
+        }
+        return imgui_md::get_color();
+    }
+
     void BLOCK_CODE(const MD_BLOCK_CODE_DETAIL*, bool e) override {
         if (e) {
             m_is_code = true;
@@ -144,11 +155,12 @@ public:
         imgui_md::BLOCK_TABLE(d, e);
     }
 
-    void open_url() const override {
-        // Optional: open URL in the default browser. This is platform-dependent.
-        // In macOS: system(("open " + m_href).c_str());
-        // In Linux: system(("xdg-open " + m_href).c_str());
-    }
+    // A click on a link in the preview. Deciding what to do with the target —
+    // browser, another document, or the file manager — belongs to the app, which
+    // runs outside this render pass, so the target is queued on Graphics and
+    // picked up by LumiscriptaApp on a later frame. Defined in graphics.cpp,
+    // where Graphics is complete (only forward-declared here).
+    void open_url() const override;
 
     bool get_image(image_info& nfo) const override;
 
@@ -211,6 +223,18 @@ public:
     // (light art for the light theme, dark art for the dark theme).
     bool getWordmarkTexture(Theme theme, ImTextureID& texture, ImVec2& size);
 
+    // ------------------------------------------------------------------
+    // Hyperlinks (clicks in the preview)
+    // ------------------------------------------------------------------
+    // Queue the target of a clicked link. MarkdownRenderer::open_url() calls
+    // this while a document is being rendered; the app consumes the request on a
+    // later frame, because the answer to it is a confirmation dialog.
+    void requestOpenLink(const string& href);
+
+    // Hand over the queued href, if any, and clear it. Returns false when no link
+    // was clicked since the previous call.
+    bool takePendingLink(string& href);
+
 private:
     ImGuiContext* m_ctx;
     GLFWwindow* m_window;
@@ -225,6 +249,7 @@ private:
     };
     std::unordered_map<string, CachedImage> m_images;
     string m_baseDir;
+    string m_pendingLink;   // target of a link clicked in the preview, if any
 
     // Branding art paths, resolved once at init (absolute or cwd-relative, never
     // joined to the document directory).

@@ -19,6 +19,16 @@ enum class ViewMode {
     Welcome
 };
 
+// A hyperlink target that still needs the user's answer: web addresses and other
+// markdown documents are confirmed before anything happens. Any other local file
+// needs no confirmation — it is revealed in the OS file manager on the spot — so
+// it never reaches this state.
+enum class LinkTarget {
+    None,
+    Web,
+    Document
+};
+
 class LumiscriptaApp {
 public:
     LumiscriptaApp();
@@ -53,11 +63,19 @@ private:
     ViewMode m_viewMode;
     bool m_running;
 
+    // Hyperlink clicked in the preview (see processLinkRequests/renderLinkDialog).
+    LinkTarget m_linkTarget;
+    string m_linkHref;   // target exactly as written in the document
+    string m_linkPath;   // resolved path, for Document targets
+
     void processInput();
     void renderUI();
     void renderMenuBar();
     void renderWelcome();
     void enterMainUI(ViewMode mode);
+    void processLinkRequests();
+    void renderLinkDialog();
+    void performLinkAction();
 };
 
 #endif /* APP_H */
