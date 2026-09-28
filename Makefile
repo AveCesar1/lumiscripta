@@ -152,7 +152,7 @@ $(BUILDDIR):
 	mkdir -p $(BUILDDIR)/src $(BUILDDIR)/imgui/backends $(BUILDDIR)/imgui/misc/cpp $(BUILDDIR)/md4c $(BUILDDIR)/imgui_md
 
 clean:
-	$(RM) -r $(BUILDDIR) $(TARGET)
+	$(RM) -r $(BUILDDIR) $(TARGET) Lumiscripta.app lumiscripta.ini
 
 run: all
 	./$(TARGET)

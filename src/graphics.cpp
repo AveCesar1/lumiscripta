@@ -311,8 +311,10 @@ bool Graphics::init(GLFWwindow* window) {
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
 
-    // Disable .ini file — we don't want ImGui saving window positions.
-    io.IniFilename = nullptr;
+    // ImGui settings persist to a file next to the working directory. That file holds
+    // ImGui's own window state; the OS window's size and position are placed by the
+    // app instead — see centreWindowOnMonitor() in app.cpp.
+    io.IniFilename = "lumiscripta.ini";
 
     if (!ImGui_ImplGlfw_InitForOpenGL(window, true)) {
         std::cerr << "ImGui_ImplGlfw_InitForOpenGL failed\n";

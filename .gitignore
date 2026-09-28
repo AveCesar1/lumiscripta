@@ -2,3 +2,6 @@ RESUME.md
 build/
 .vscode/
 .DS_Store
+
+# ImGui's settings file, written next to the working directory at runtime
+lumiscripta.ini

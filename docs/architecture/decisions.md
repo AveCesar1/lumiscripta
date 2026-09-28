@@ -80,15 +80,31 @@ Design decisions visible in the current implementation, with their rationale whe
 
 ## 13. Small welcome window that grows into the editor
 
-**Decision:** The app starts as a 440×300 window in `Welcome` mode; `enterMainUI()` resizes it to 1280×800 on first document.
+**Decision:** The app starts as a 440×300 window in `Welcome` mode; the first time the main UI appears, `enterMainUI()` grows it to 1280×800 and re-centres it. Both sizes are named constants (`kWelcomeWindow*` / `kMainWindow*` in `app.cpp`).
 
-**Rationale:** Not documented; an unobtrusive first-run window is the obvious reading of the behavior. **(inferred)**
+**Rationale:** Not documented; an unobtrusive first-run window is the obvious reading of the behavior. The re-centring is there because growing a window keeps its top-left corner, which left the editor looking pushed off-centre — see decision 14 for the full placement rules. **(inferred / [code])**
 
-## 14. No ImGui `.ini` persistence
+## 14. ImGui `.ini` persistence, and explicit window placement
 
-**Decision:** `io.IniFilename = nullptr`.
+**Decision:** ImGui settings are written to `lumiscripta.ini` (`io.IniFilename` points at it;
+it was `nullptr` before). The OS window is *not* restored from that file — placement is
+decided by the app instead:
 
-**Rationale:** Code comment: "we don't want ImGui saving window positions." **[code]**
+| Situation | Result |
+|---|---|
+| Launch, with or without a document argument | the 440×300 welcome window is centred on the work area |
+| Welcome → *Create file* / *Open file*, or a document passed on the command line | the window grows to 1280×800 and is centred |
+| A document is already open, then *Open* or a hyperlink to another document | the window keeps its size and position |
+| The user has moved or resized the window | nothing re-centres it — only the two appearances above do |
+
+`centreWindowOnMonitor()` uses the **work area** of the monitor the window sits on (falling
+back to the primary monitor's video mode), so the menu bar and the dock/taskbar stay clear.
+
+**Rationale:** ImGui's ini records ImGui windows, not the GLFW window's geometry, so placement
+had to be explicit: growing the welcome window into the editor size kept the old top-left
+corner (the editor looked shoved off-centre), and a document passed on the command line was
+never centred at all. Centring at exactly the two moments a window appears fixes both while
+never fighting the window manager over a window the user has positioned. **[code]**
 
 ## 15. Zoom via `FontGlobalScale`
 

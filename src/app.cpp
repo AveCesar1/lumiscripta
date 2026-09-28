@@ -18,6 +18,75 @@
 #include <iostream>
 #include <memory>
 
+// The two window sizes the app uses: the small chrome-free welcome window it opens
+// with, and the full editor window it grows into once a document is open. Both are
+// centred the first time they appear, on the monitor's work area (see
+// centreWindowOnMonitor()); after that the window stays wherever the user put it.
+static const int kWelcomeWindowWidth = 440;
+static const int kWelcomeWindowHeight = 300;
+static const int kMainWindowWidth = 1280;
+static const int kMainWindowHeight = 800;
+
+#ifdef __APPLE__
+#include <CoreFoundation/CoreFoundation.h>
+#include <CoreGraphics/CoreGraphics.h>
+#include <objc/message.h>
+#include <objc/runtime.h>
+
+// On macOS, glfwSetWindowIcon() is ignored by design because macOS windows do not
+// have window-corner icons like Windows/Linux. Instead, application icons reside in
+// the Dock. When running outside an .app bundle (e.g. CLI direct execution), the Dock
+// icon defaults to the generic executable icon unless programmatically set via Cocoa.
+static void setMacDockIcon(const unsigned char* pixels, int width, int height) {
+    if (!pixels || width <= 0 || height <= 0) return;
+
+    Class nsAppClass = objc_getClass("NSApplication");
+    if (!nsAppClass) return;
+    id app = ((id (*)(id, SEL))objc_msgSend)((id)nsAppClass, sel_registerName("sharedApplication"));
+    if (!app) return;
+
+    Class nsBitmapRepClass = objc_getClass("NSBitmapImageRep");
+    if (!nsBitmapRepClass) return;
+    id repAlloc = ((id (*)(id, SEL))objc_msgSend)((id)nsBitmapRepClass, sel_registerName("alloc"));
+    if (!repAlloc) return;
+
+    id colorSpace = (id)CFSTR("NSDeviceRGBColorSpace");
+    unsigned char* planes[1] = { const_cast<unsigned char*>(pixels) };
+
+    typedef id (*InitBitmapMethod)(id, SEL, unsigned char**, long, long, long, long, signed char, signed char, id, long, long);
+    InitBitmapMethod initBitmap = (InitBitmapMethod)objc_msgSend;
+
+    id rep = initBitmap(repAlloc,
+                        sel_registerName("initWithBitmapDataPlanes:pixelsWide:pixelsHigh:bitsPerSample:samplesPerPixel:hasAlpha:isPlanar:colorSpaceName:bytesPerRow:bitsPerPixel:"),
+                        planes,
+                        (long)width,
+                        (long)height,
+                        (long)8,
+                        (long)4,
+                        (signed char)1, // YES
+                        (signed char)0, // NO
+                        colorSpace,
+                        (long)(width * 4),
+                        (long)32);
+
+    if (!rep) return;
+
+    Class nsImageClass = objc_getClass("NSImage");
+    if (!nsImageClass) return;
+    id imgAlloc = ((id (*)(id, SEL))objc_msgSend)((id)nsImageClass, sel_registerName("alloc"));
+    if (!imgAlloc) return;
+
+    typedef id (*InitWithSizeMethod)(id, SEL, CGSize);
+    InitWithSizeMethod initWithSize = (InitWithSizeMethod)objc_msgSend;
+    CGSize sz = { (CGFloat)width, (CGFloat)height };
+    id image = initWithSize(imgAlloc, sel_registerName("initWithSize:"), sz);
+    if (!image) return;
+
+    ((void (*)(id, SEL, id))objc_msgSend)(image, sel_registerName("addRepresentation:"), rep);
+    ((void (*)(id, SEL, id))objc_msgSend)(app, sel_registerName("setApplicationIconImage:"), image);
+}
+#endif
+
 // Draw the branding wordmark at the current cursor, scaled to 'targetHeight'
 // with its aspect ratio preserved (the art's pixel size never matters). Passing
 // 'availableWidth' > 0 centres it horizontally in that width.
@@ -125,6 +194,53 @@ static void revealInFileManager(const string& path) {
 #endif
 }
 
+// Centre a window of 'width' x 'height' on the monitor it currently sits on (the
+// primary monitor when it does not sit on any), using that monitor's *work area* so
+// the menu bar and dock/taskbar stay clear. A window larger than the work area is
+// pinned to its top-left corner instead of being pushed off screen.
+//
+// Only the moments a window appears are centred, never a window the user has moved.
+static void centreWindowOnMonitor(GLFWwindow* window, int width, int height) {
+    if (window == nullptr) return;
+
+    int windowX = 0;
+    int windowY = 0;
+    glfwGetWindowPos(window, &windowX, &windowY);
+
+    GLFWmonitor* monitor = glfwGetPrimaryMonitor();
+    int monitorCount = 0;
+    GLFWmonitor** monitors = glfwGetMonitors(&monitorCount);
+    for (int i = 0; monitors != nullptr && i < monitorCount; ++i) {
+        int candidateX = 0, candidateY = 0, candidateW = 0, candidateH = 0;
+        glfwGetMonitorWorkarea(monitors[i], &candidateX, &candidateY, &candidateW, &candidateH);
+        if (candidateW <= 0 || candidateH <= 0) continue;
+        if (windowX >= candidateX && windowX < candidateX + candidateW &&
+            windowY >= candidateY && windowY < candidateY + candidateH) {
+            monitor = monitors[i];
+            break;
+        }
+    }
+    if (monitor == nullptr) return;
+
+    int areaX = 0, areaY = 0, areaW = 0, areaH = 0;
+    glfwGetMonitorWorkarea(monitor, &areaX, &areaY, &areaW, &areaH);
+    if (areaW <= 0 || areaH <= 0) {
+        // No work area reported: fall back to the monitor's full video mode.
+        const GLFWvidmode* videoMode = glfwGetVideoMode(monitor);
+        if (videoMode == nullptr) return;
+        areaX = 0;
+        areaY = 0;
+        areaW = videoMode->width;
+        areaH = videoMode->height;
+    }
+
+    int x = areaX + (areaW - width) / 2;
+    int y = areaY + (areaH - height) / 2;
+    if (x < areaX) x = areaX;
+    if (y < areaY) y = areaY;
+    glfwSetWindowPos(window, x, y);
+}
+
 LumiscriptaApp::LumiscriptaApp()
         : m_file(nullptr), m_graphics(nullptr), m_window(nullptr), m_viewMode(ViewMode::Welcome),
             m_running(false), m_linkTarget(LinkTarget::None) {}
@@ -144,7 +260,7 @@ bool LumiscriptaApp::init() {
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
 #endif
 
-    m_window = glfwCreateWindow(440, 300, "Lumiscripta", NULL, NULL);
+    m_window = glfwCreateWindow(kWelcomeWindowWidth, kWelcomeWindowHeight, "Lumiscripta", NULL, NULL);
     if (!m_window) {
         std::cerr << "glfwCreateWindow failed\n";
         glfwTerminate();
@@ -154,9 +270,11 @@ bool LumiscriptaApp::init() {
     glfwMakeContextCurrent(m_window);
     glfwSwapInterval(1);
 
-    // Window (taskbar) icon. GLFW applies it on Windows and X11; macOS and
-    // Wayland ignore the call and take the icon from the executable's bundle or
-    // desktop entry instead (installed by `make install` / `make macos-bundle`).
+    // Window / taskbar icon.
+    // - On Windows and X11/Linux, GLFW sets the window titlebar and taskbar icon.
+    // - On macOS, GLFW ignores glfwSetWindowIcon() because window icons don't exist
+    //   on Mac windows. Instead, we programmatically set the macOS Dock icon via Cocoa
+    //   so that running the binary directly (or outside an .app bundle) displays the logo!
     {
         const string iconPath = resolveAsset("branding/logo-light.png");
         int width = 0;
@@ -171,9 +289,18 @@ bool LumiscriptaApp::init() {
             icon.height = height;
             icon.pixels = pixels;
             glfwSetWindowIcon(m_window, 1, &icon);
+
+#ifdef __APPLE__
+            setMacDockIcon(pixels, width, height);
+#endif
         }
         if (pixels) stbi_image_free(pixels);
     }
+
+    // The welcome window opens centred. Its placement is set explicitly because the
+    // OS default differs between platforms, and because the window doubles in size
+    // later (see enterMainUI()).
+    centreWindowOnMonitor(m_window, kWelcomeWindowWidth, kWelcomeWindowHeight);
 
     m_graphics = std::make_unique<Graphics>();
     if (!m_graphics->init(m_window)) {
@@ -242,11 +369,19 @@ bool LumiscriptaApp::loadFile(const string& path) {
 }
 
 void LumiscriptaApp::enterMainUI(ViewMode mode) {
+    // Reaching this while still in Welcome means the main UI is appearing for the
+    // first time in this session — whether it was reached through the welcome
+    // buttons, or by passing a document on the command line. It takes the editor
+    // size and is centred on the screen.
+    //
+    // Every later call (opening another document, accepting a link) must leave the
+    // window alone: by then it is exactly where the user put it, and it stays there.
+    const bool firstMainUi = (m_viewMode == ViewMode::Welcome);
     m_viewMode = mode;
-    if (m_window) {
-        // The welcome window is small; grow back to the full editor size.
-        glfwSetWindowSize(m_window, 1280, 800);
-    }
+    if (m_window == nullptr || !firstMainUi) return;
+
+    glfwSetWindowSize(m_window, kMainWindowWidth, kMainWindowHeight);
+    centreWindowOnMonitor(m_window, kMainWindowWidth, kMainWindowHeight);
 }
 
 bool LumiscriptaApp::saveFile(const string& path) {
@@ -673,9 +808,14 @@ void LumiscriptaApp::renderLinkDialog() {
     // The dialog supplies both insets the global style delegates to each window:
     // margins from the border, and zero item spacing so every gap below is an
     // explicit number rather than a remainder (see layoutWrappedText).
+    // Modals in ImGui take WindowRounding (which defaults to 0.0f) rather than
+    // PopupRounding, and WindowBorderSize (0.0f) rather than PopupBorderSize (1.0f).
+    // We explicitly push them here so the dialog has gently rounded corners and a subtle border.
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(34.0f, 24.0f));
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,
                         ImVec2(ImGui::GetStyle().ItemSpacing.x, 0.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 8.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
 
     // No stock title bar: its label is left-aligned and reads as an afterthought.
     // The question itself is the header — centred, bold, wrapped line by line.
@@ -760,7 +900,7 @@ void LumiscriptaApp::renderLinkDialog() {
         dismissed = true;
     }
 
-    ImGui::PopStyleVar(2);   // WindowPadding + ItemSpacing
+    ImGui::PopStyleVar(4);   // WindowPadding + ItemSpacing + WindowRounding + WindowBorderSize
 
     if (accepted) performLinkAction();
     else if (dismissed) m_linkTarget = LinkTarget::None;

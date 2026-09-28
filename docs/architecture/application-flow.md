@@ -15,13 +15,31 @@ The lifecycle of a Lumiscripta process, from `main()` to `glfwTerminate()`. Sour
 
 1. `glfwInit()`; window hints for an OpenGL **3.3 core** profile (plus `GLFW_OPENGL_FORWARD_COMPAT` on macOS).
 2. Create the **small welcome window: 440×300**, titled `Lumiscripta`; make the context current; `glfwSwapInterval(1)` (VSync).
-3. Window/taskbar icon: `stbi_load()` on `resolveAsset("branding/logo-light.png")` → `glfwSetWindowIcon()` → free the pixels. A missing icon is explicitly non-fatal.
-4. `Graphics::init(window)`: ImGui context, GLFW + OpenGL3 backends (GLSL `#version 330`), font-atlas construction (see [font-system.md](font-system.md)), branding wordmark paths, initial light theme. Failure aborts startup.
-5. Create the `File` object (empty).
+3. Window/taskbar icon: `stbi_load()` on `resolveAsset("branding/logo-light.png")` → `glfwSetWindowIcon()` → free the pixels. A missing icon is explicitly non-fatal. On macOS the Dock icon is set through Cocoa instead, because macOS windows have no window-level icon and GLFW ignores the call (decision 14 in [decisions.md](decisions.md)).
+4. **Centre the welcome window** on the monitor's work area (`centreWindowOnMonitor()`), so its placement does not depend on the platform default.
+5. `Graphics::init(window)`: ImGui context, GLFW + OpenGL3 backends (GLSL `#version 330`), font-atlas construction (see [font-system.md](font-system.md)), branding wordmark paths, initial light theme, and ImGui settings persisted to `lumiscripta.ini` (decision 14). Failure aborts startup.
+6. Create the `File` object (empty).
 
 ## Optional CLI Load
 
-`loadFile(path)`: `File::load()` reads the whole file synchronously; on success App calls `Graphics::clearImageCache()` and `setBaseDirectory(parentDirectory(path))` (so relative images resolve against the document), then `enterMainUI(ViewMode::Preview)` — which switches mode **and resizes the window to 1280×800**, leaving the welcome screen behind for good.
+`loadFile(path)`: `File::load()` reads the whole file synchronously; on success App calls `Graphics::clearImageCache()` and `setBaseDirectory(parentDirectory(path))` (so relative images resolve against the document), then `enterMainUI(ViewMode::Preview)` — which switches mode, **resizes the window to 1280×800 and centres it** (see *Window placement*), leaving the welcome screen behind for good.
+
+## Window Placement
+
+The OS window is placed by the app; `lumiscripta.ini` does not restore it (ImGui's ini stores
+ImGui windows, not the GLFW window's geometry). `centreWindowOnMonitor()` centres a window of
+a given size on the **work area** of the monitor it currently sits on, falling back to the
+primary monitor's video mode when no work area is reported:
+
+| Situation | Result |
+|---|---|
+| Launch, with or without a document argument | the 440×300 welcome window is centred |
+| Welcome → *Create file* / *Open file*, or a document passed on the command line | the window grows to 1280×800 and is centred |
+| A document is already open, then *Open* or a hyperlink to another document | the window keeps its size and position |
+| The user has moved or resized the window | nothing re-centres it — only the two appearances above do |
+
+`enterMainUI()` implements this with a single condition: the main UI is appearing for the first
+time exactly when the mode at that moment is still `Welcome`.
 
 ## Main Loop (`App::run`)
 
@@ -73,11 +91,11 @@ flowchart TD
     B --> C{"App::init"}
     C -- failure --> X["exit: EXIT_FAILURE"]
     C -- ok --> D["glfwInit + OpenGL 3.3 core hints"]
-    D --> E["Create 440x300 welcome window<br/>vsync + window icon"]
+    D --> E["Create 440x300 welcome window<br/>vsync + window icon + centred"]
     E --> F["Graphics::init<br/>ImGui, backends, fonts, theme"]
     F --> G["File created (empty)"]
     G --> H{"argv[1] present?"}
-    H -- yes --> I["loadFile, then Preview mode<br/>clear image cache, rebase base dir<br/>resize 1280x800"]
+    H -- yes --> I["loadFile, then Preview mode<br/>clear image cache, rebase base dir<br/>resize 1280x800 + centre"]
     H -- no --> J["remain in Welcome"]
     I --> K
     J --> K
