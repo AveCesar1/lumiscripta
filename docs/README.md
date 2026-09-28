@@ -17,10 +17,17 @@ docs/
 │   ├── image-pipeline.md
 │   ├── font-system.md
 │   └── decisions.md
+├── development/               <- developer guides and operational workflows
+│   ├── building.md
+│   ├── project-structure.md
+│   ├── coding-guidelines.md
+│   └── contributing.md
 └── screenshots/               <- images referenced from the root README.md
 ```
 
 ## Index
+
+### Architecture
 
 | Document | Contents |
 |---|---|
@@ -32,3 +39,13 @@ docs/
 | [Image pipeline](architecture/image-pipeline.md) | Local image resolution, caching, `stb_image` decoding, GL textures, failure handling, cleanup |
 | [Font system](architecture/font-system.md) | Merged font atlases, FreeType, colour emoji, glyph ranges, load-bearing details |
 | [Architectural decisions](architecture/decisions.md) | Verified design decisions and the rationale visible in the code |
+
+### Development
+
+| Document | Contents |
+|---|---|
+| [Building Lumiscripta](development/building.md) | Prerequisites, compiler requirements, make targets, and platform build behaviors |
+| [Project structure](development/project-structure.md) | Repository directory layout, source modularity, and resource organization |
+| [Coding guidelines](development/coding-guidelines.md) | C++17 style rules, naming conventions, ownership, error handling, and library rules |
+| [Contributing](development/contributing.md) | Guidelines for proposing changes, preserving design minimalism, and testing |
+
