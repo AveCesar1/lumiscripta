@@ -10,9 +10,11 @@
 #include "imgui/backends/imgui_impl_opengl3.h"
 #include "imgui/misc/cpp/imgui_stdlib.h"
 #include "imgui_md/imgui_md.h"
+#include "md4c.h"                            // the column scan parses the document itself
 #include "IconsFontAwesome/IconsFontAwesome7.h"
 #include "misc/freetype/imgui_freetype.h"   // ImGuiFreeTypeLoaderFlags_* (FreeType is the loader now)
 #include <GLFW/glfw3.h>
+#include <cctype>
 #include <cfloat>
 #include <fstream>
 #include <iostream>
@@ -610,6 +612,479 @@ void Graphics::renderPreview(const std::string& content) {
 
 Theme Graphics::getTheme() const {
     return m_theme;
+}
+
+// ---------------------------------------------------------------------------
+// Table columns — content metrics and layout
+//
+// imgui_md hands BLOCK_TABLE() a column count before it has seen a single cell,
+// and an immediate-mode render can never go back and re-flow what it has already
+// drawn. Equal columns are therefore all it can do on its own, which suits the
+// usual table badly: a two-letter status or a date ends up as wide as a
+// paragraph.
+//
+// So the columns are measured first. MarkdownRenderer::print() runs md4c over the
+// document a second time, with the same dialect flags, using callbacks that only
+// collect cell text — it sees exactly the same tables in the same order. Each
+// cell becomes two widths: the whole cell on one line ("preferred") and the
+// widest run inside it that cannot be broken ("minimum"). The render pass then
+// distributes the table's fixed width between those.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// A column never collapses below this, and never takes more than this share of
+// the table however long a single cell is.
+const float kMinColumnWidth = 48.0f;
+const float kMaxColumnShare = 0.5f;
+
+struct CellMeasure {
+    float natural;   // the whole cell on one line
+    float longest;   // the widest run that cannot be broken
+};
+
+// Measure 'text' with 'font', at the size the font was loaded with. Both values
+// are in unscaled pixels, so a zoom step does not invalidate them.
+CellMeasure measureCell(ImFont* font, const string& text) {
+    CellMeasure m = { 0.0f, 0.0f };
+    if (font == nullptr || text.empty()) return m;
+
+    const float size = (font->LegacySize > 0.0f) ? font->LegacySize : 17.0f;
+    const char* const base = text.c_str();
+    m.natural = font->CalcTextSizeA(size, FLT_MAX, 0.0f, base).x;
+
+    // Longest run of non-space characters: the narrowest the column could ever
+    // be without breaking a word across two lines.
+    size_t i = 0;
+    while (i < text.size()) {
+        while (i < text.size() && std::isspace(static_cast<unsigned char>(text[i]))) ++i;
+        const size_t start = i;
+        while (i < text.size() && !std::isspace(static_cast<unsigned char>(text[i]))) ++i;
+        if (i > start) {
+            const float w = font->CalcTextSizeA(size, FLT_MAX, 0.0f, base + start, base + i).x;
+            if (w > m.longest) m.longest = w;
+        }
+    }
+    return m;
+}
+
+// State for the measuring pass: which table and column the parser is inside, and
+// the text collected for the cell being read.
+struct TableScanState {
+    std::vector<TableColumnMetrics>* tables;
+    int    tableIndex;
+    int    column;
+    bool   inHeader;
+    string cell;
+};
+
+int scanEnterBlock(MD_BLOCKTYPE type, void* detail, void* userdata) {
+    TableScanState& s = *static_cast<TableScanState*>(userdata);
+    switch (type) {
+        case MD_BLOCK_TABLE: {
+            const MD_BLOCK_TABLE_DETAIL* d = static_cast<const MD_BLOCK_TABLE_DETAIL*>(detail);
+            TableColumnMetrics metrics;
+            metrics.minWidth.assign(d->col_count, 0.0f);
+            metrics.preferredWidth.assign(d->col_count, 0.0f);
+            s.tables->push_back(metrics);
+            s.tableIndex = static_cast<int>(s.tables->size()) - 1;
+            break;
+        }
+        case MD_BLOCK_THEAD: s.inHeader = true;  break;
+        case MD_BLOCK_TBODY: s.inHeader = false; break;
+        case MD_BLOCK_TR:    s.column = -1;      break;
+        case MD_BLOCK_TH:
+        case MD_BLOCK_TD:
+            ++s.column;
+            s.cell.clear();
+            break;
+        default: break;
+    }
+    return 0;
+}
+
+int scanLeaveBlock(MD_BLOCKTYPE type, void* detail, void* userdata) {
+    (void)detail;
+    TableScanState& s = *static_cast<TableScanState*>(userdata);
+
+    if (type == MD_BLOCK_TABLE) {
+        s.tableIndex = -1;
+        s.column = -1;
+        s.inHeader = false;
+        s.cell.clear();
+        return 0;
+    }
+    if (type != MD_BLOCK_TD && type != MD_BLOCK_TH) return 0;
+    if (s.tableIndex < 0 || s.column < 0) return 0;
+
+    // Header cells render in the bold face and body cells in the regular one, so
+    // that is how each is measured.
+    TableColumnMetrics& metrics = (*s.tables)[static_cast<size_t>(s.tableIndex)];
+    const size_t column = static_cast<size_t>(s.column);
+    if (column < metrics.minWidth.size()) {
+        const CellMeasure cell = measureCell(s.inHeader ? g_font_bold : g_font_regular, s.cell);
+        if (cell.longest > metrics.minWidth[column]) metrics.minWidth[column] = cell.longest;
+        if (cell.natural > metrics.preferredWidth[column]) metrics.preferredWidth[column] = cell.natural;
+    }
+    s.cell.clear();
+    return 0;
+}
+
+int scanText(MD_TEXTTYPE type, const MD_CHAR* text, MD_SIZE size, void* userdata) {
+    TableScanState& s = *static_cast<TableScanState*>(userdata);
+    if (s.tableIndex < 0 || s.column < 0) return 0;
+
+    // Only text that reaches the screen as glyphs counts: line breaks and raw
+    // HTML contribute no width of their own.
+    switch (type) {
+        case MD_TEXT_NORMAL:
+        case MD_TEXT_NULLCHAR:
+        case MD_TEXT_ENTITY:
+        case MD_TEXT_CODE:
+            s.cell.append(text, static_cast<size_t>(size));
+            break;
+        default:
+            break;
+    }
+    return 0;
+}
+
+// md4c invokes these hooks unconditionally, so they must exist even though the
+// scan only cares about blocks and text.
+int scanEnterSpan(MD_SPANTYPE, void*, void*) { return 0; }
+int scanLeaveSpan(MD_SPANTYPE, void*, void*) { return 0; }
+
+// Measure every table in the document. Same bytes and same dialect flags as the
+// render pass, so table N here is table N there.
+void scanTableColumns(const char* str, size_t length, std::vector<TableColumnMetrics>& out) {
+    MD_PARSER parser = {};
+    parser.flags = MD_FLAG_TABLES | MD_FLAG_UNDERLINE | MD_FLAG_STRIKETHROUGH;
+    parser.enter_block = scanEnterBlock;
+    parser.leave_block = scanLeaveBlock;
+    parser.enter_span = scanEnterSpan;
+    parser.leave_span = scanLeaveSpan;
+    parser.text = scanText;
+
+    TableScanState state;
+    state.tables = &out;
+    state.tableIndex = -1;
+    state.column = -1;
+    state.inHeader = false;
+
+    md_parse(str, static_cast<MD_SIZE>(length), &parser, &state);
+}
+
+// FNV-1a: enough to tell one document buffer from the next while a preview is
+// re-rendered every frame from a buffer that usually has not changed.
+size_t hashBytes(const char* data, size_t size) {
+    unsigned long long h = 1469598103934665603ull;
+    for (size_t i = 0; i < size; ++i) {
+        h ^= static_cast<unsigned char>(data[i]);
+        h *= 1099511628211ull;
+    }
+    return static_cast<size_t>(h);
+}
+
+} // namespace
+
+// Share 'total' pixels starting at 'start' between 'columns', using the metrics
+// measured for this table. 'metrics' may be null, which falls back to equal
+// columns. Appends the left edge of every column to 'out'.
+//
+// Every column starts at its minimum, so no word is ever broken. What is left of
+// the table then goes to the columns still short of their preferred width, in
+// proportion to how much room each one asked for — a text-heavy column grows, a
+// compact one stops growing as soon as it fits. Once every column has reached its
+// preferred width the surplus is shared by weight instead, so the table's whole
+// width stays in use.
+// Caps a single very long cell: no column may claim more than its share of the
+// table, however long one of its cells is.
+void enforceMaxColumnWidth(float total, std::vector<float>& width) {
+    if (width.size() < 2) return;
+    const float maxColumn = total * kMaxColumnShare;
+
+    float taken = 0.0f;
+    size_t capped = 0;
+    for (size_t i = 0; i < width.size(); ++i) {
+        if (width[i] > maxColumn) {
+            taken += width[i] - maxColumn;
+            width[i] = maxColumn;
+            ++capped;
+        }
+    }
+    // Nothing was too wide, or everything was: the widths are already final.
+    if (capped == 0 || capped == width.size()) return;
+
+    // Return what the capped columns gave up to the others, by weight.
+    float base = 0.0f;
+    for (size_t i = 0; i < width.size(); ++i)
+        if (width[i] < maxColumn) base += width[i];
+    if (base <= 0.0f) return;
+    for (size_t i = 0; i < width.size(); ++i)
+        if (width[i] < maxColumn) width[i] += taken * width[i] / base;
+}
+
+void layoutTableColumns(float start, float total, const TableColumnMetrics* metrics,
+                        int columns, std::vector<float>& out) {
+    if (columns <= 0) {
+        out.clear();
+        return;
+    }
+
+    // imgui_md places a cell's text ItemSpacing.x to the right of the column
+    // edge, so that much of every column cannot hold text.
+    const float inset = ImGui::GetStyle().ItemSpacing.x;
+    const float scale = ImGui::GetIO().FontGlobalScale;
+    // Caps a single very long cell: no column may claim more than half the table.
+    const float cap = std::max(kMinColumnWidth, total * kMaxColumnShare);
+
+    std::vector<float> minW(static_cast<size_t>(columns), kMinColumnWidth);
+    std::vector<float> prefW(static_cast<size_t>(columns), kMinColumnWidth);
+    for (int i = 0; i < columns; ++i) {
+        const size_t c = static_cast<size_t>(i);
+        float mn = kMinColumnWidth;
+        float pf = kMinColumnWidth;
+        if (metrics != nullptr && c < metrics->minWidth.size()) {
+            mn = std::min(metrics->minWidth[c] * scale + inset, cap);
+            pf = std::min(std::max(metrics->preferredWidth[c] * scale + inset, mn), cap);
+        }
+        minW[c] = mn;
+        prefW[c] = pf;
+    }
+
+    float sumMin = 0.0f;
+    float sumPref = 0.0f;
+    float sumRoom = 0.0f;
+    for (int i = 0; i < columns; ++i) {
+        const size_t c = static_cast<size_t>(i);
+        sumMin  += minW[c];
+        sumPref += prefW[c];
+        sumRoom += prefW[c] - minW[c];
+    }
+
+    std::vector<float> width(static_cast<size_t>(columns), 0.0f);
+    if (sumMin >= total) {
+        // The minimums do not fit: scale them down together, which keeps the
+        // result inside the table.
+        const float base = (sumMin > 0.0f) ? sumMin : 1.0f;
+        for (int i = 0; i < columns; ++i) {
+            const size_t c = static_cast<size_t>(i);
+            width[c] = total * minW[c] / base;
+        }
+    } else if (sumRoom <= 0.0f) {
+        // Nothing can grow: every column already sits at its preferred width, so
+        // the leftover is shared out by weight.
+        const float base = (sumPref > 0.0f) ? sumPref : 1.0f;
+        const float extra = total - sumMin;
+        for (int i = 0; i < columns; ++i) {
+            const size_t c = static_cast<size_t>(i);
+            width[c] = minW[c] + extra * prefW[c] / base;
+        }
+    } else {
+        const float extra = total - sumMin;
+        if (extra >= sumRoom) {
+            const float base = (sumPref > 0.0f) ? sumPref : 1.0f;
+            const float surplus = extra - sumRoom;
+            for (int i = 0; i < columns; ++i) {
+                const size_t c = static_cast<size_t>(i);
+                width[c] = prefW[c] + surplus * prefW[c] / base;
+            }
+        } else {
+            for (int i = 0; i < columns; ++i) {
+                const size_t c = static_cast<size_t>(i);
+                width[c] = minW[c] + extra * (prefW[c] - minW[c]) / sumRoom;
+            }
+        }
+    }
+
+    // Whatever path was taken, a single very long cell must not have been able
+    // to claim the table.
+    enforceMaxColumnWidth(total, width);
+
+    out.clear();
+    out.reserve(static_cast<size_t>(columns));
+    float x = start;
+    for (int i = 0; i < columns; ++i) {
+        out.push_back(x);
+        x += width[static_cast<size_t>(i)];
+    }
+}
+
+// ---------------------------------------------------------------------------
+// MarkdownRenderer — table cells
+//
+// imgui_md::BLOCK_TD() lays a cell out like this on entry:
+//
+//     SetCursorPos(cellLeft, rowTop);   // first line starts here
+//     TextUnformatted("");              // an empty item...
+//     SameLine();                       // ...which advances by ItemSpacing.x
+//
+// so the cell's first line of text is drawn at cellLeft + ItemSpacing.x.
+// On exit it balances the ImGui::Indent(cellLeft) it applied, and it is that
+// indent — not the cursor position — that ImGui::ItemSize() falls back to when
+// it moves to the next line: CursorPos.x = Pos.x + Indent.x + ColumnsOffset.x.
+// The ItemSpacing.x bump from SameLine() is therefore lost after the first
+// line, and every wrapped line is drawn ItemSpacing.x (8 px) to the left of the
+// first one — far enough to cross the column rule, which imgui_md draws at
+// cellLeft + ItemSpacing.x / 2.
+//
+// The fix re-bases the indent on where the first line really is, which makes
+// ItemSize() land on the same x for every line of the cell. It also narrows the
+// wrap width imgui_md computes for wrapped lines (colRight - GetCursorPosX())
+// to exactly the width the first line was given, so lines stay inside the cell
+// on both sides. The correction is taken back out on cell exit, *before* the
+// base class un-indents, so the indent balances no matter what it was.
+//
+// The first line is not moved: the cell keeps its existing padding and the
+// French-indent look of the current rendering.
+//
+// In addition, BLOCK_TD() clears window->DC.IsSameLine upon entry so that each
+// cell's first line begins at the top of the row instead of continuing on the
+// last baseline of the previous cell when that previous cell wrapped into
+// multiple lines.
+//
+// Finally, BLOCK_TD() and BLOCK_TR() collaborate to center the content of each
+// cell vertically within its row: BLOCK_TD records the vertex range of each
+// cell, and BLOCK_TR computes the row's maximum content height and adjusts the
+// vertical coordinates of shorter cells by half the remaining height.
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// MarkdownRenderer — tables
+// ---------------------------------------------------------------------------
+
+// A document is normally re-rendered every frame from the same buffer, so the
+// column measurement is cached and only redone when the text actually changes.
+// It runs before the render, so a freshly typed table is already laid out with
+// the right column widths on the frame it appears.
+int MarkdownRenderer::print(const char* str, const char* str_end) {
+    const size_t length = static_cast<size_t>(str_end - str);
+    const size_t hash = hashBytes(str, length);
+    if (hash != m_document_hash || length != m_document_length) {
+        m_table_metrics.clear();
+        scanTableColumns(str, length, m_table_metrics);
+        m_document_hash = hash;
+        m_document_length = length;
+    }
+    m_table_index = 0;
+    return imgui_md::print(str, str_end);
+}
+
+void MarkdownRenderer::BLOCK_TABLE(const MD_BLOCK_TABLE_DETAIL* d, bool e) {
+    if (!e) {
+        imgui_md::BLOCK_TABLE(d, e);
+        return;
+    }
+
+    const float avail = ImGui::GetContentRegionAvail().x;
+    m_table_width = std::min(avail * 0.9f, 900.0f);
+    m_table_start = ImGui::GetCursorPosX() + (avail - m_table_width) * 0.5f;
+    imgui_md::BLOCK_TABLE(d, e);
+
+    // The metrics measured for this table, when the scan found one with the same
+    // shape. Anything else (no metrics, a different column count) falls through
+    // to equal columns.
+    const TableColumnMetrics* metrics = nullptr;
+    if (m_table_index >= 0 && static_cast<size_t>(m_table_index) < m_table_metrics.size()) {
+        const TableColumnMetrics& measured = m_table_metrics[static_cast<size_t>(m_table_index)];
+        if (measured.minWidth.size() == d->col_count) metrics = &measured;
+    }
+    layoutTableColumns(m_table_start, m_table_width, metrics,
+                       static_cast<int>(d->col_count), m_table_col_pos);
+
+    m_table_last_pos.x = m_table_start + m_table_width;
+    ImGui::SetCursorPosX(m_table_start);
+    ++m_table_index;
+}
+
+void MarkdownRenderer::BLOCK_TD(const MD_BLOCK_TD_DETAIL* d, bool e) {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    if (e) {
+        ImGuiWindow* window = ImGui::GetCurrentWindow();
+        if (window != nullptr) {
+            window->DC.IsSameLine = false;
+        }
+        CellSpan span;
+        span.vtxStart = dl ? dl->VtxBuffer.Size : 0;
+        span.vtxEnd = span.vtxStart;
+        m_table_row_cells.push_back(span);
+    }
+
+    if (!e && m_table_indent_adjust != 0.0f) {
+        // Restore the indent the base class expects to see before it un-indents.
+        // Only the field is written: moving CursorPos here would change the
+        // position BLOCK_TD() records for the end of the cell.
+        ImGuiWindow* window = ImGui::GetCurrentWindow();
+        if (window != nullptr) window->DC.Indent.x -= m_table_indent_adjust;
+        m_table_indent_adjust = 0.0f;
+    }
+
+    imgui_md::BLOCK_TD(d, e);
+
+    if (e) {
+        // BLOCK_TD() has just left the cursor on the cell's first line. Make the
+        // indent resolve to that same x so ItemSize() reproduces it on every
+        // following line.
+        ImGuiWindow* window = ImGui::GetCurrentWindow();
+        if (window != nullptr) {
+            const float firstLineX =
+                window->DC.CursorPos.x - window->Pos.x - window->DC.ColumnsOffset.x;
+            m_table_indent_adjust = firstLineX - window->DC.Indent.x;
+            window->DC.Indent.x = firstLineX;
+        }
+    } else {
+        if (!m_table_row_cells.empty() && dl != nullptr) {
+            m_table_row_cells.back().vtxEnd = dl->VtxBuffer.Size;
+        }
+    }
+}
+
+void MarkdownRenderer::BLOCK_TR(bool e) {
+    if (e) {
+        m_table_row_cells.clear();
+        imgui_md::BLOCK_TR(e);
+    } else {
+        imgui_md::BLOCK_TR(e);
+
+        // Vertically center the content of each cell within this row.
+        // We find the maximum content height among all cells in the row, then
+        // shift the vertices of shorter cells down by half the difference.
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        if (dl != nullptr && !m_table_row_cells.empty()) {
+            float maxContentH = 0.0f;
+            for (const auto& cell : m_table_row_cells) {
+                if (cell.vtxEnd <= cell.vtxStart) continue;
+                float minY = 1e9f, maxY = -1e9f;
+                for (int v = cell.vtxStart; v < cell.vtxEnd; ++v) {
+                    const float y = dl->VtxBuffer[v].pos.y;
+                    if (y < minY) minY = y;
+                    if (y > maxY) maxY = y;
+                }
+                if (minY <= maxY) {
+                    const float h = maxY - minY;
+                    if (h > maxContentH) maxContentH = h;
+                }
+            }
+
+            for (const auto& cell : m_table_row_cells) {
+                if (cell.vtxEnd <= cell.vtxStart) continue;
+                float minY = 1e9f, maxY = -1e9f;
+                for (int v = cell.vtxStart; v < cell.vtxEnd; ++v) {
+                    const float y = dl->VtxBuffer[v].pos.y;
+                    if (y < minY) minY = y;
+                    if (y > maxY) maxY = y;
+                }
+                if (minY > maxY) continue;
+                const float contentH = maxY - minY;
+                const float shiftY = (maxContentH - contentH) * 0.5f;
+                if (shiftY > 0.5f) {
+                    for (int v = cell.vtxStart; v < cell.vtxEnd; ++v) {
+                        dl->VtxBuffer[v].pos.y += shiftY;
+                    }
+                }
+            }
+        }
+        m_table_row_cells.clear();
+    }
 }
 
 // ---------------------------------------------------------------------------

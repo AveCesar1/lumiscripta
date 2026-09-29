@@ -130,7 +130,38 @@ never fighting the window manager over a window the user has positioned. **[code
 
 **Rationale:** Instant switching (a `RESUME.md` implementation rule) and, per `DESCRIPTION.md`, the palettes are hand-tuned hex values ("no pure black, no pure white"). **[docs/code]**
 
-## Notable Omissions (verified against the code)
+## 19. Table cells re-base ImGui's indent on the first line
+
+**Decision:** `MarkdownRenderer::BLOCK_TD()` (in `graphics.cpp`) overrides `imgui_md`'s
+cell entry/exit: after the base class has positioned the cell, it sets `window->DC.Indent.x`
+to where the first line is really drawn, and takes that correction back out before the base
+class un-indents.
+
+**Rationale:** `imgui_md::BLOCK_TD()` starts a cell with `SetCursorPos(cellLeft, rowTop)`,
+then `TextUnformatted("")` + `SameLine()`, so the **first** line lands at
+`cellLeft + ItemSpacing.x`. But `ImGui::ItemSize()` — which positions every *subsequent*
+line — falls back to `Pos.x + Indent.x + ColumnsOffset.x`, and the indent was only ever
+`Indent(cellLeft)`. The `SameLine()` bump was therefore lost after line one and every
+wrapped line was drawn 8 px further left, crossing the column rule that `imgui_md` draws at
+`cellLeft + ItemSpacing.x / 2`. It also gave wrapped lines an 8 px wider wrap width, which
+overflowed the *right* rule of narrow tables. Re-basing the indent aligns every line and
+narrows the wrap width to what the first line was given, without moving the first line.
+`third_party/imgui_md` is left untouched. As with decision 17, this reads ImGui internals and
+**must be re-verified on ImGui upgrades**. **[code]**
+
+## 20. Table cells are vertically centred per row
+
+**Decision:** `MarkdownRenderer::BLOCK_TR()` (in `graphics.cpp`) computes the maximum
+content height among all cells in a row and shifts shorter cells down by half the
+difference.
+
+**Rationale:** `imgui_md` lays out table cells top-aligned: each cell begins at the
+row's top Y position, so a single-line cell sits above a multi-line cell in the same
+row. At the end of the row (`BLOCK_TR(false)`), we now know every cell's vertex
+extents — the tallest cell defines the row height, and shorter cells are moved
+down by `(maxH - cellH) / 2`. This keeps the first line's horizontal position
+intact (decision 19) and only adjusts the vertical coordinate. Works for any
+number of columns and any mix of wrapped/non-wrapped content. **[code]**
 
 - **No save-as dialog** — `Ctrl/Cmd + S` only writes the existing path.
 - **Links do not open** — `MarkdownRenderer::open_url()` is an empty no-op.

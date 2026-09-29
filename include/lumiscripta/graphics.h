@@ -4,6 +4,7 @@
 #include <string>
 #include <algorithm>
 #include <unordered_map>
+#include <vector>
 
 using std::string;
 
@@ -41,6 +42,14 @@ enum class ImageError {
     Unreadable   // file exists but stb_image refused it (corrupt/unsupported)
 };
 
+// Content metrics for the columns of one Markdown table, measured from the
+// document before it is rendered (see MarkdownRenderer::print). Both are in
+// unscaled pixels; the zoom factor is applied when the columns are laid out.
+struct TableColumnMetrics {
+    std::vector<float> minWidth;        // widest unbreakable run in the column
+    std::vector<float> preferredWidth;  // widest cell if it never wrapped
+};
+
 // The markdown renderer asks Graphics for image textures (and Graphics owns the
 // cache), so Graphics is forward-declared here and its definition comes later.
 class Graphics;
@@ -50,6 +59,8 @@ public:
         MarkdownRenderer()
                 : m_code_block(false), m_code_draw_list(nullptr), m_code_start(0.0f, 0.0f),
                     m_code_width(0.0f), m_table_width(0.0f), m_table_start(0.0f),
+                    m_table_indent_adjust(0.0f),
+                    m_document_hash(0), m_document_length(0), m_table_index(0),
                     m_graphics(nullptr) {}
 
     // The renderer is a member of Graphics, but imgui_md calls into it without
@@ -135,25 +146,34 @@ public:
         }
     }
 
-    void BLOCK_TABLE(const MD_BLOCK_TABLE_DETAIL* d, bool e) override {
-        if (e) {
-            const float avail = ImGui::GetContentRegionAvail().x;
-            m_table_width = std::min(avail * 0.9f, 900.0f);
-            m_table_start = ImGui::GetCursorPosX() + (avail - m_table_width) * 0.5f;
-            imgui_md::BLOCK_TABLE(d, e);
-            m_table_col_pos.clear();
-            if (d->col_count > 0) {
-                const float column_width = m_table_width / static_cast<float>(d->col_count);
-                for (unsigned i = 0; i < d->col_count; ++i) {
-                    m_table_col_pos.push_back(m_table_start + column_width * i);
-                }
-            }
-            m_table_last_pos.x = m_table_start + m_table_width;
-            ImGui::SetCursorPosX(m_table_start);
-            return;
-        }
-        imgui_md::BLOCK_TABLE(d, e);
-    }
+    // Table blocks, cells and rows all live in graphics.cpp, next to the column
+    // metrics they share.
+    //
+    // BLOCK_TABLE() gives the table its fixed total width and lays the columns
+    // out from the content metrics gathered by print(): every column gets at
+    // least the width of its longest word, is allowed to grow towards the width
+    // its widest cell would need on one line, and shares what is left over in
+    // proportion to how much room each column asked for.
+    //
+    // BLOCK_TD() re-bases ImGui's indent on where the first line really is:
+    // imgui_md starts a cell with SetCursorPos() + SameLine(), so the first line
+    // sits ItemSpacing.x right of the indent, while the indent is what positions
+    // every wrapped line that follows. It also clears IsSameLine first (see the
+    // implementation) so every cell starts on the row top instead of one line
+    // below the previous cell.
+    //
+    // BLOCK_TR() centres each cell's content vertically once the row height is
+    // known, which is only at the end of the row.
+    void BLOCK_TABLE(const MD_BLOCK_TABLE_DETAIL* d, bool e) override;
+    void BLOCK_TD(const MD_BLOCK_TD_DETAIL* d, bool e) override;
+    void BLOCK_TR(bool e) override;
+
+    // Render a document. Shadows imgui_md::print() so the renderer can measure
+    // the document's table columns *before* laying them out: an immediate-mode
+    // render cannot know how wide a column should be until it has seen the
+    // content, and it cannot go back once the content has been drawn. Defined in
+    // graphics.cpp.
+    int print(const char* str, const char* str_end);
 
     // A click on a link in the preview. Deciding what to do with the target —
     // browser, another document, or the file manager — belongs to the app, which
@@ -171,6 +191,21 @@ private:
     float m_code_width;
     float m_table_width;
     float m_table_start;
+    float m_table_indent_adjust;   // per-cell indent correction, removed at cell exit
+    struct CellSpan {
+        int vtxStart;
+        int vtxEnd;
+    };
+    std::vector<CellSpan> m_table_row_cells; // vertex ranges for each cell in current row
+
+    // Content metrics for every table in the document: measured by print() and
+    // consumed by BLOCK_TABLE() in render order (md4c visits both in the same
+    // order, so index N is the same table in both).
+    std::vector<TableColumnMetrics> m_table_metrics;
+    size_t m_document_hash;     // identity of the document the metrics came from
+    size_t m_document_length;
+    int    m_table_index;       // table being rendered, indexing m_table_metrics
+
     Graphics* m_graphics;   // owner; provides the image texture cache
 };
 
